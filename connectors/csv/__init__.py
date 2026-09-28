@@ -1,3 +1,3 @@
-from .adapter import parse_csv_rows
+from .adapter import parse_csv_dataset, parse_csv_rows
 
-__all__ = ["parse_csv_rows"]
+__all__ = ["parse_csv_dataset", "parse_csv_rows"]

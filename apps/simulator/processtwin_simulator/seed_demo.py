@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 
+from packages.units import si_unit, to_si
 from sqlalchemy import select
 
 from apps.api.processtwin_api.auth import hash_password
@@ -101,7 +102,12 @@ def seed(hours: float) -> None:
                     timestamp=point.timestamp,
                     value=point.value,
                     unit=point.unit,
+                    original_value=point.value,
+                    original_unit=point.unit,
+                    normalized_value=to_si(point.value, point.unit),
+                    normalized_unit=si_unit(point.unit),
                     quality_status=QualityStatusName(point.quality),
+                    quality_reasons=[f"SYNTHETIC_{point.quality}_READING"],
                     source="SIMULATED",
                 )
             )

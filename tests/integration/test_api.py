@@ -109,6 +109,27 @@ def test_invalid_sensor_value_is_rejected_but_quality_event_is_audited() -> None
         assert session.query(QualityEvent).count() == 1
 
 
+def test_ingestion_retains_original_value_and_si_normalization() -> None:
+    client, headers, sensor = setup_tenant()
+    response = client.post(
+        "/api/v1/ingestion/readings",
+        headers=headers,
+        json={
+            "sensor_id": str(sensor.id),
+            "timestamp": datetime.now(UTC).isoformat(),
+            "value": 453.15,
+            "unit": "K",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["original_value"] == 453.15
+    assert body["original_unit"] == "K"
+    assert body["normalized_value"] == 453.15
+    assert body["normalized_unit"] == "K"
+    assert body["quality_reasons"]
+
+
 def test_unauthenticated_requests_are_rejected() -> None:
     client, _, _ = setup_tenant()
     assert client.get("/api/v1/plants").status_code == 401

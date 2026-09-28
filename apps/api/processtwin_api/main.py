@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from packages.optimization import OptimizationService
 from packages.physics import CSTRInputs, CSTRPhysicsModel, CSTRState
 from packages.twin import DigitalTwinService
-from packages.units import convert, to_si
+from packages.units import convert, si_unit, to_si
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from sqlalchemy import desc, func, select
 from sqlalchemy.exc import IntegrityError
@@ -42,6 +42,7 @@ from .contracts import (
     SimulationRequest,
 )
 from .database import Base, engine
+from .datasets import router as datasets_router
 from .models import (
     Alert,
     Equipment,
@@ -81,6 +82,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="ProcessTwin API", version="0.1.0", lifespan=lifespan)
+app.include_router(datasets_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_settings().cors_origins,
@@ -353,7 +355,12 @@ def readings(
                 "timestamp": item.timestamp,
                 "value": item.value,
                 "unit": item.unit,
+                "original_value": item.original_value,
+                "original_unit": item.original_unit,
+                "normalized_value": item.normalized_value,
+                "normalized_unit": item.normalized_unit,
                 "quality_status": item.quality_status.value,
+                "quality_reasons": item.quality_reasons,
                 "source": item.source,
             }
             for item in data
@@ -395,7 +402,12 @@ def ingest_one(
         timestamp=payload.timestamp,
         value=normalized,
         unit=sensor.unit,
+        original_value=payload.value,
+        original_unit=payload.unit,
+        normalized_value=to_si(normalized, sensor.unit),
+        normalized_unit=si_unit(sensor.unit),
         quality_status=quality.status,
+        quality_reasons=[quality.detail or quality.event_type or "ALL_CONFIGURED_CHECKS_PASSED"],
         source=source,
     )
     session.add(reading)
@@ -420,8 +432,13 @@ def ingest_one(
     return {
         "id": str(reading.id),
         "quality_status": quality.status.value,
+        "quality_reasons": reading.quality_reasons,
         "value": normalized,
         "unit": sensor.unit,
+        "original_value": payload.value,
+        "original_unit": payload.unit,
+        "normalized_value": reading.normalized_value,
+        "normalized_unit": reading.normalized_unit,
     }
 
 

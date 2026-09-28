@@ -130,6 +130,7 @@ class Plant(Timestamped, Base):
     equipment: Mapped[list[Equipment]] = relationship(
         back_populates="plant", cascade="all, delete-orphan"
     )
+    process_units: Mapped[list[ProcessUnit]] = relationship(cascade="all, delete-orphan")
 
 
 class ProcessUnit(Timestamped, Base):
@@ -215,13 +216,137 @@ class SensorReading(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     value: Mapped[float] = mapped_column(Float, nullable=False)
     unit: Mapped[str] = mapped_column(String(32), nullable=False)
+    original_value: Mapped[float | None] = mapped_column(Float)
+    original_unit: Mapped[str | None] = mapped_column(String(32))
+    normalized_value: Mapped[float | None] = mapped_column(Float)
+    normalized_unit: Mapped[str | None] = mapped_column(String(32))
     quality_status: Mapped[QualityStatusName] = mapped_column(
         Enum(QualityStatusName), nullable=False
     )
+    quality_reasons: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     source: Mapped[str] = mapped_column(String(32), default="SIMULATED", nullable=False)
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
+
+
+class DataSource(Timestamped, Base):
+    __tablename__ = "data_sources"
+    __table_args__ = (Index("ix_data_sources_organization_id", "organization_id"),)
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    plant_id: Mapped[UUID | None] = mapped_column(ForeignKey("plants.id", ondelete="SET NULL"))
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    endpoint: Mapped[str | None] = mapped_column(String(500))
+    read_only: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    configuration: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class Dataset(Timestamped, Base):
+    __tablename__ = "datasets"
+    __table_args__ = (Index("ix_datasets_organization_id", "organization_id"),)
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    plant_id: Mapped[UUID] = mapped_column(ForeignKey("plants.id", ondelete="CASCADE"), nullable=False)
+    data_source_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("data_sources.id", ondelete="SET NULL")
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+
+
+class DatasetVersion(Timestamped, Base):
+    __tablename__ = "dataset_versions"
+    __table_args__ = (UniqueConstraint("dataset_id", "version", name="uq_dataset_version"),)
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    dataset_id: Mapped[UUID] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="IMPORTED", nullable=False)
+    source_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    measurement_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    quality_summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class PlantTag(Timestamped, Base):
+    __tablename__ = "plant_tags"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "plant_id", "tag", name="uq_plant_tag"),
+        Index("ix_plant_tags_organization_id", "organization_id"),
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    plant_id: Mapped[UUID] = mapped_column(ForeignKey("plants.id", ondelete="CASCADE"), nullable=False)
+    process_unit_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("process_units.id", ondelete="SET NULL")
+    )
+    equipment_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("equipment.id", ondelete="SET NULL")
+    )
+    tag: Mapped[str] = mapped_column(String(128), nullable=False)
+    canonical_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    engineering_unit: Mapped[str] = mapped_column(String(32), nullable=False)
+    normalized_unit: Mapped[str] = mapped_column(String(32), nullable=False)
+    minimum_si: Mapped[float | None] = mapped_column(Float)
+    maximum_si: Mapped[float | None] = mapped_column(Float)
+    expected_sampling_interval_s: Mapped[int | None] = mapped_column(Integer)
+    max_rate_of_change_per_s: Mapped[float | None] = mapped_column(Float)
+    max_drift_per_hour: Mapped[float | None] = mapped_column(Float)
+
+
+class TagMapping(Timestamped, Base):
+    __tablename__ = "tag_mappings"
+    __table_args__ = (
+        UniqueConstraint("dataset_id", "source_tag", name="uq_dataset_source_tag"),
+        Index("ix_tag_mappings_organization_id", "organization_id"),
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    dataset_id: Mapped[UUID] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False)
+    plant_tag_id: Mapped[UUID] = mapped_column(ForeignKey("plant_tags.id", ondelete="CASCADE"), nullable=False)
+    source_tag: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_unit: Mapped[str] = mapped_column(String(32), nullable=False)
+
+
+class DatasetObservation(Base):
+    __tablename__ = "dataset_observations"
+    __table_args__ = (
+        Index("ix_dataset_observations_version_tag_time", "dataset_version_id", "tag_mapping_id", "timestamp"),
+        Index("ix_dataset_observations_organization_id", "organization_id"),
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    dataset_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("dataset_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    tag_mapping_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tag_mappings.id", ondelete="CASCADE"), nullable=False
+    )
+    timestamp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    original_timestamp: Mapped[str] = mapped_column(String(128), nullable=False)
+    row_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    original_value: Mapped[float | None] = mapped_column(Float)
+    original_text: Mapped[str | None] = mapped_column(Text)
+    original_unit: Mapped[str | None] = mapped_column(String(32))
+    normalized_value: Mapped[float | None] = mapped_column(Float)
+    normalized_unit: Mapped[str] = mapped_column(String(32), nullable=False)
+    quality_status: Mapped[QualityStatusName] = mapped_column(Enum(QualityStatusName), nullable=False)
+    quality_reasons: Mapped[list[str]] = mapped_column(JSON, nullable=False)
 
 
 class QualityEvent(Base):

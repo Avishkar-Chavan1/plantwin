@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { HistoricalDataExplorer } from "./historical-data-explorer";
 
 type Reading = { value: number; unit: string; quality_status: string; source: string; timestamp: string };
 type Summary = {
@@ -13,6 +14,8 @@ type Summary = {
 };
 type Simulation = { scenario: { yield_pct: number; conversion_pct: number; energy_proxy_kw: number }; difference: { yield_percentage_points: number; energy_kw: number }; constraint_violations: string[] };
 type Optimization = { optimized: { yield_pct: number; energy_kw: number; variables: { temperature_c: number; pressure_bar: number; flow_m3_h: number } }; constraints: { status: string }; advisory: string };
+type PlantOption = { id: string; name: string };
+type DatasetExploration = { dataset_version: { id: string; version: number }; variables: Array<{ canonical_name: string; engineering_unit: string; normalized_unit: string; sample_count: number; missing_count: number; min: number | null; max: number | null; mean: number | null; standard_deviation: number | null; percentiles: Record<string, number | null>; sampling_rate_hz: number | null; quality_counts: Record<string, number> }>; data_gaps: Array<{ variable: string; start: string; end: string; duration_s: number }> };
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const navigation = ["dashboard", "plants", "equipment", "sensors", "digital-twins", "simulations", "optimization", "recommendations", "alerts", "models", "data", "settings", "audit-log"];
@@ -27,6 +30,8 @@ export function ProcessTwinConsole({ initialView }: { initialView: string }) {
   const [scenario, setScenario] = useState({ temperature_c: 185, pressure_bar: 10, flow_m3_h: 72 });
   const [simulation, setSimulation] = useState<Simulation | null>(null);
   const [optimization, setOptimization] = useState<Optimization | null>(null);
+  const [plants, setPlants] = useState<PlantOption[]>([]);
+  const [exploration, setExploration] = useState<DatasetExploration | null>(null);
 
   const headers = useMemo(() => token && organization ? { Authorization: `Bearer ${token}`, "X-Organization-ID": organization, "Content-Type": "application/json" } : undefined, [token, organization]);
   async function loadSummary() {
@@ -36,6 +41,12 @@ export function ProcessTwinConsole({ initialView }: { initialView: string }) {
     setSummary(await response.json());
   }
   useEffect(() => { void loadSummary(); }, [headers]);
+  useEffect(() => {
+    if (!headers) return;
+    void fetch(`${apiUrl}/api/v1/plants`, { headers }).then(async (response) => {
+      if (response.ok) setPlants((await response.json()).items);
+    });
+  }, [headers]);
 
   async function login(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -60,7 +71,26 @@ export function ProcessTwinConsole({ initialView }: { initialView: string }) {
     setOptimization(data); setMessage("An advisory bounded optimization has been generated.");
   }
 
+  async function importHistoricalData(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token || !organization) return;
+    const form = new FormData(event.currentTarget);
+    const response = await fetch(`${apiUrl}/api/v1/datasets/import`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "X-Organization-ID": organization },
+      body: form,
+    });
+    const data = await response.json();
+    if (!response.ok) { setMessage(data.error?.message ?? "Historical import failed"); return; }
+    const result = await fetch(`${apiUrl}/api/v1/datasets/${data.version.id}/exploration`, { headers });
+    if (!result.ok) { setMessage("Import succeeded, but exploration could not be loaded."); return; }
+    setExploration(await result.json());
+    setMessage(`Imported ${data.version.row_count} historical rows as dataset version ${data.version.version}.`);
+  }
+
   if (!token || initialView === "login") return <main className="login"><section className="brand"><p className="eyebrow">PROCESS TWIN / REFERENCE PLANT</p><h1>Physics-informed<br />industrial intelligence.</h1><p>Monitor, simulate and optimize—without sending control commands to the plant.</p></section><form className="login-card" onSubmit={login}><h2>Welcome back</h2><label>Email<input name="email" type="email" defaultValue="engineer@processtwin.demo" required /></label><label>Password<input name="password" type="password" defaultValue="ChangeMeDemoOnly!" required /></label><button type="submit">Sign in to demo</button><small>{message}</small></form></main>;
+
+  if (initialView === "data") return <HistoricalDataExplorer token={token} organization={organization!} />;
 
   const m = summary?.measurements ?? {};
   return <main className="shell"><aside><div className="logo"><span>◈</span> ProcessTwin</div><p className="tenant">SIMULATION ENVIRONMENT</p><nav>{navigation.map((entry) => <a className={initialView === entry ? "active" : ""} href={`/${entry === "dashboard" ? "dashboard" : entry}`} key={entry}>{entry.replaceAll("-", " ")}</a>)}</nav><div className="operator"><span className="dot" /> Human-in-the-loop<br /><small>No control connection</small></div></aside><section className="workspace"><header><div><p className="eyebrow">DEMO CHEMICAL PLANT / {summary?.equipment?.tag ?? "—"}</p><h1>{initialView.replaceAll("-", " ")}</h1></div><div className="header-status"><span className="pill good">{summary?.plant_health ?? "LOADING"}</span><span>● SIMULATED DATA</span></div></header><p className="notice">{summary?.safety_notice}</p><p className="message">{message}</p>

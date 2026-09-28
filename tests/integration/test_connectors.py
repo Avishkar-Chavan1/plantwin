@@ -4,8 +4,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
-
-from connectors.csv import parse_csv_rows
+from connectors.csv import parse_csv_dataset, parse_csv_rows
 from connectors.mqtt import MqttReadingAdapter
 from connectors.opcua.adapter import OpcUaConnectorDisabled
 from connectors.rest import RestReadingAdapter
@@ -38,6 +37,27 @@ def test_csv_connector_rejects_missing_columns_and_accepts_valid_rows() -> None:
     parsed = parse_csv_rows(raw)
     assert len(parsed) == 1
     assert parsed[0].unit == "degC"
+
+
+def test_csv_connector_supports_arbitrary_plant_tags() -> None:
+    raw = (
+        b"timestamp,TI_101,PI_101,FI_101,AI_101\n"
+        b"2026-01-01T00:00:00Z,180,10.1,72,2.5\n"
+    )
+    rows = parse_csv_dataset(
+        raw,
+        tag_mapping={
+            "TI_101": {"name": "reactor.temperature", "unit": "degC"},
+            "PI_101": {"name": "reactor.pressure", "unit": "bar"},
+            "FI_101": {"name": "reactor.feed_flow", "unit": "kg/h"},
+            "AI_101": {"name": "reactor.feed_concentration", "unit": "mol/L"},
+        },
+    )
+    assert len(rows) == 1
+    assert rows[0]["reactor.temperature"] == 180.0
+    assert rows[0]["reactor.pressure"] == 10.1
+    assert rows[0]["reactor.feed_flow"] == 72.0
+    assert rows[0]["reactor.feed_concentration"] == 2.5
 
 
 def test_mqtt_connector_validates_topic_and_json_payload() -> None:

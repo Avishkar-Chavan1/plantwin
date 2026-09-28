@@ -51,6 +51,8 @@ The Python packages are intentionally separate from delivery applications:
 
 See [the system architecture](docs/architecture/system.md), [CSTR equations](docs/engineering/cstr.md), [API guide](docs/api/api.md), [security guide](docs/security/security.md) and [production deployment notes](docs/deployment/production.md).
 
+Historical CSV and optional Parquet imports, configurable tag mapping, SI normalization, data-quality reporting and exploration are documented in [the historical data import guide](docs/data-import.md). Imported datasets are user-supplied and are distinct from the simulator's synthetic demo data.
+
 ## Development commands
 
 | Command | Purpose |

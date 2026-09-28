@@ -1,3 +1,3 @@
-from .conversion import convert, to_si
+from .conversion import convert, si_unit, to_si
 
-__all__ = ["convert", "to_si"]
+__all__ = ["convert", "si_unit", "to_si"]
