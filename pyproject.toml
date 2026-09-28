@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "processtwin"
+version = "0.1.0"
+description = "Human-in-the-loop industrial process digital twin platform"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.30,<1",
+  "pydantic>=2.8,<3",
+  "pydantic-settings>=2.4,<3",
+  "SQLAlchemy>=2.0,<3",
+  "psycopg[binary]>=3.2,<4",
+  "alembic>=1.13,<2",
+  "passlib[bcrypt]>=1.7,<2",
+  "PyJWT>=2.9,<3",
+  "email-validator>=2.2,<3",
+  "numpy>=2.0,<3",
+  "scipy>=1.14,<2",
+  "scikit-learn>=1.5,<2",
+  "prometheus-client>=0.20,<1",
+  "python-multipart>=0.0.9,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3,<9", "pytest-asyncio>=0.24,<1", "httpx>=0.27,<1", "ruff>=0.6,<1", "mypy>=1.11,<2"]
+mqtt = ["paho-mqtt>=2.1,<3"]
+opcua = ["asyncua>=1.1,<2"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["apps*", "packages*", "connectors*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["apps", "packages", "connectors", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"] # Ruff formatter owns layout; long engineering identifiers and advisory text remain readable.
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+exclude = ["migrations"]

@@ -1,0 +1,7 @@
+services:
+  api:
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: production
+  web:
+    restart: unless-stopped

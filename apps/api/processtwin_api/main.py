@@ -1,0 +1,926 @@
+from __future__ import annotations
+
+import asyncio
+import csv
+import io
+import logging
+from contextlib import asynccontextmanager
+from datetime import timedelta
+from typing import Annotated, Any
+from uuid import UUID
+
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from packages.optimization import OptimizationService
+from packages.physics import CSTRInputs, CSTRPhysicsModel, CSTRState
+from packages.twin import DigitalTwinService
+from packages.units import convert, to_si
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+from sqlalchemy import desc, func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from .audit import append_audit
+from .auth import (
+    SessionDependency,
+    TenantContext,
+    create_token,
+    current_user,
+    decode_refresh_token,
+    require_roles,
+    tenant_context,
+    verify_password,
+)
+from .config import get_settings
+from .contracts import (
+    LoginRequest,
+    OptimizationRequest,
+    ReadingRequest,
+    RefreshRequest,
+    SimulationRequest,
+)
+from .database import Base, engine
+from .models import (
+    Alert,
+    Equipment,
+    ModelVersion,
+    OptimizationRun,
+    OrganizationMembership,
+    Plant,
+    QualityEvent,
+    QualityStatusName,
+    Recommendation,
+    RoleName,
+    Sensor,
+    SensorReading,
+    Simulation,
+    User,
+)
+from .quality import DataQualityService
+
+logger = logging.getLogger("processtwin.api")
+REQUESTS = Counter(
+    "processtwin_api_requests_total", "API request count", ["method", "path", "status"]
+)
+LATENCY = Histogram("processtwin_api_request_seconds", "API request duration", ["path"])
+INGESTED = Counter("processtwin_sensor_readings_total", "Sensor readings persisted", ["quality"])
+
+
+class ApiError(HTTPException):
+    def __init__(self, status_code: int, code: str, message: str) -> None:
+        super().__init__(status_code=status_code, detail={"code": code, "message": message})
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    # Migration is preferred in deployment; this preserves a zero-dependency local developer start.
+    Base.metadata.create_all(bind=engine)
+    yield
+
+
+app = FastAPI(title="ProcessTwin API", version="0.1.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=get_settings().cors_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type", "X-Organization-ID", "X-Request-ID"],
+)
+
+
+@app.middleware("http")
+async def request_context(request: Request, call_next: Any) -> Response:
+    request_id = request.headers.get("X-Request-ID") or __import__("uuid").uuid4().hex
+    with LATENCY.labels(request.url.path).time():
+        try:
+            response = await call_next(request)
+        except Exception:
+            logger.exception(
+                "unhandled request error",
+                extra={"request_id": request_id, "path": request.url.path},
+            )
+            response = JSONResponse(
+                status_code=500,
+                content={
+                    "error": {
+                        "code": "INTERNAL_ERROR",
+                        "message": "Internal server error",
+                        "request_id": request_id,
+                    }
+                },
+            )
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Frame-Options"] = "DENY"
+    REQUESTS.labels(request.method, request.url.path, str(response.status_code)).inc()
+    return response
+
+
+@app.exception_handler(HTTPException)
+async def http_error(request: Request, exc: HTTPException) -> JSONResponse:
+    detail = (
+        exc.detail
+        if isinstance(exc.detail, dict)
+        else {"code": "HTTP_ERROR", "message": str(exc.detail)}
+    )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {**detail, "request_id": request.headers.get("X-Request-ID", "")}},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, _: RequestValidationError) -> JSONResponse:
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": {
+                "code": "INVALID_REQUEST",
+                "message": "Request validation failed",
+                "request_id": request.headers.get("X-Request-ID", ""),
+            }
+        },
+    )
+
+
+@app.get("/health", tags=["system"])
+def health() -> dict[str, str]:
+    return {"status": "ok", "service": "processtwin-api"}
+
+
+@app.get("/metrics", include_in_schema=False)
+def metrics() -> Response:
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.post("/api/v1/auth/login", tags=["auth"])
+def login(payload: LoginRequest, request: Request, session: SessionDependency) -> dict[str, Any]:
+    user = session.scalar(select(User).where(User.email == payload.email.lower()))
+    if (
+        user is None
+        or not user.is_active
+        or not verify_password(payload.password, user.password_hash)
+    ):
+        raise ApiError(
+            status.HTTP_401_UNAUTHORIZED, "INVALID_CREDENTIALS", "Invalid email or password"
+        )
+    memberships = list(
+        session.scalars(
+            select(OrganizationMembership).where(OrganizationMembership.user_id == user.id)
+        )
+    )
+    append_audit(
+        session,
+        memberships[0].organization_id,
+        "LOGIN",
+        "user",
+        user_id=user.id,
+        ip_address=request.client.host if request.client else None,
+    )
+    session.commit()
+    settings = get_settings()
+    return {
+        "access_token": create_token(
+            user.id, "access", timedelta(minutes=settings.access_token_expire_minutes)
+        ),
+        "refresh_token": create_token(
+            user.id, "refresh", timedelta(days=settings.refresh_token_expire_days)
+        ),
+        "token_type": "bearer",
+        "organizations": [
+            {"id": str(item.organization_id), "role": item.role.value} for item in memberships
+        ],
+    }
+
+
+@app.get("/api/v1/auth/me", tags=["auth"])
+def me(user: Annotated[User, Depends(current_user)], session: SessionDependency) -> dict[str, Any]:
+    memberships = list(
+        session.scalars(
+            select(OrganizationMembership).where(OrganizationMembership.user_id == user.id)
+        )
+    )
+    return {
+        "id": str(user.id),
+        "email": user.email,
+        "organizations": [
+            {"id": str(item.organization_id), "role": item.role.value} for item in memberships
+        ],
+    }
+
+
+@app.post("/api/v1/auth/refresh", tags=["auth"])
+def refresh(payload: RefreshRequest, session: SessionDependency) -> dict[str, str]:
+    user = session.get(User, decode_refresh_token(payload.refresh_token))
+    if user is None or not user.is_active:
+        raise ApiError(
+            status.HTTP_401_UNAUTHORIZED,
+            "INVALID_REFRESH_TOKEN",
+            "Refresh token user is no longer active",
+        )
+    settings = get_settings()
+    return {
+        "access_token": create_token(
+            user.id, "access", timedelta(minutes=settings.access_token_expire_minutes)
+        ),
+        "token_type": "bearer",
+    }
+
+
+TenantDependency = Annotated[TenantContext, Depends(tenant_context)]
+EngineerDependency = Annotated[
+    TenantContext, Depends(require_roles(RoleName.OWNER, RoleName.ADMIN, RoleName.ENGINEER))
+]
+AdminDependency = Annotated[TenantContext, Depends(require_roles(RoleName.OWNER, RoleName.ADMIN))]
+
+
+def tenant_equipment(session: Session, equipment_id: UUID, organization_id: UUID) -> Equipment:
+    equipment = session.scalar(
+        select(Equipment).where(
+            Equipment.id == equipment_id, Equipment.organization_id == organization_id
+        )
+    )
+    if equipment is None:
+        raise ApiError(
+            status.HTTP_404_NOT_FOUND,
+            "EQUIPMENT_NOT_FOUND",
+            "Equipment was not found in this organization",
+        )
+    return equipment
+
+
+@app.get("/api/v1/plants", tags=["plants"])
+def list_plants(
+    context: TenantDependency, session: SessionDependency, limit: int = 50, offset: int = 0
+) -> dict[str, Any]:
+    if not 1 <= limit <= 200 or offset < 0:
+        raise ApiError(422, "INVALID_PAGINATION", "limit must be 1-200 and offset non-negative")
+    query = (
+        select(Plant)
+        .where(Plant.organization_id == context.organization_id)
+        .order_by(Plant.name)
+        .limit(limit)
+        .offset(offset)
+    )
+    plants = list(session.scalars(query))
+    return {
+        "items": [
+            {"id": str(plant.id), "name": plant.name, "location": plant.location}
+            for plant in plants
+        ],
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@app.get("/api/v1/plants/{plant_id}", tags=["plants"])
+def get_plant(
+    plant_id: UUID, context: TenantDependency, session: SessionDependency
+) -> dict[str, Any]:
+    plant = session.scalar(
+        select(Plant).where(Plant.id == plant_id, Plant.organization_id == context.organization_id)
+    )
+    if plant is None:
+        raise ApiError(404, "PLANT_NOT_FOUND", "Plant was not found in this organization")
+    return {
+        "id": str(plant.id),
+        "name": plant.name,
+        "location": plant.location,
+        "equipment": [
+            {"id": str(item.id), "tag": item.tag, "name": item.name, "type": item.equipment_type}
+            for item in plant.equipment
+        ],
+    }
+
+
+@app.get("/api/v1/sensors", tags=["sensors"])
+def list_sensors(context: TenantDependency, session: SessionDependency) -> dict[str, Any]:
+    sensors = list(
+        session.scalars(
+            select(Sensor)
+            .where(Sensor.organization_id == context.organization_id)
+            .order_by(Sensor.tag)
+        )
+    )
+    return {
+        "items": [
+            {
+                "id": str(sensor.id),
+                "tag": sensor.tag,
+                "name": sensor.name,
+                "unit": sensor.unit,
+                "measurement_type": sensor.measurement_type,
+                "enabled": sensor.enabled,
+            }
+            for sensor in sensors
+        ]
+    }
+
+
+@app.get("/api/v1/sensors/{sensor_id}/readings", tags=["sensors"])
+def readings(
+    sensor_id: UUID,
+    context: TenantDependency,
+    session: SessionDependency,
+    limit: int = 200,
+    offset: int = 0,
+) -> dict[str, Any]:
+    sensor = session.scalar(
+        select(Sensor).where(
+            Sensor.id == sensor_id, Sensor.organization_id == context.organization_id
+        )
+    )
+    if sensor is None:
+        raise ApiError(404, "SENSOR_NOT_FOUND", "Sensor was not found in this organization")
+    query = (
+        select(SensorReading)
+        .where(
+            SensorReading.sensor_id == sensor.id,
+            SensorReading.organization_id == context.organization_id,
+        )
+        .order_by(desc(SensorReading.timestamp))
+        .limit(min(max(limit, 1), 1000))
+        .offset(max(offset, 0))
+    )
+    data = list(session.scalars(query))
+    return {
+        "sensor_id": str(sensor.id),
+        "items": [
+            {
+                "timestamp": item.timestamp,
+                "value": item.value,
+                "unit": item.unit,
+                "quality_status": item.quality_status.value,
+                "source": item.source,
+            }
+            for item in data
+        ],
+    }
+
+
+def ingest_one(
+    session: Session, context: TenantContext, payload: ReadingRequest, source: str = "REST"
+) -> dict[str, Any]:
+    sensor = session.scalar(
+        select(Sensor).where(
+            Sensor.id == payload.sensor_id,
+            Sensor.organization_id == context.organization_id,
+            Sensor.enabled.is_(True),
+        )
+    )
+    if sensor is None:
+        raise ApiError(404, "SENSOR_NOT_FOUND", "Enabled sensor was not found in this organization")
+    if payload.unit != sensor.unit:
+        try:
+            normalized = convert(payload.value, payload.unit, sensor.unit)
+        except ValueError as exc:
+            raise ApiError(
+                422, "INVALID_SENSOR_UNIT", f"Reading unit must be compatible with {sensor.unit}"
+            ) from exc
+    else:
+        normalized = payload.value
+    quality = DataQualityService().assess(session, sensor, payload.timestamp, normalized)
+    DataQualityService.record_event(
+        session, context.organization_id, sensor.id, payload.timestamp, quality
+    )
+    if quality.status is QualityStatusName.BAD:
+        session.commit()  # Persist the quality event; the invalid reading itself is deliberately rejected.
+        raise ApiError(422, "INVALID_SENSOR_READING", quality.detail or "Sensor reading is invalid")
+    reading = SensorReading(
+        organization_id=context.organization_id,
+        sensor_id=sensor.id,
+        timestamp=payload.timestamp,
+        value=normalized,
+        unit=sensor.unit,
+        quality_status=quality.status,
+        source=source,
+    )
+    session.add(reading)
+    try:
+        session.flush()
+    except IntegrityError as exc:
+        session.rollback()
+        session.add(
+            QualityEvent(
+                organization_id=context.organization_id,
+                sensor_id=sensor.id,
+                reading_timestamp=payload.timestamp,
+                event_type="DUPLICATE_TIMESTAMP",
+                detail="A reading already exists for this sensor timestamp",
+            )
+        )
+        session.commit()
+        raise ApiError(
+            409, "DUPLICATE_SENSOR_READING", "A reading already exists for this sensor timestamp"
+        ) from exc
+    INGESTED.labels(quality.status.value).inc()
+    return {
+        "id": str(reading.id),
+        "quality_status": quality.status.value,
+        "value": normalized,
+        "unit": sensor.unit,
+    }
+
+
+@app.post("/api/v1/ingestion/readings", tags=["ingestion"])
+def ingest_reading(
+    payload: ReadingRequest,
+    context: EngineerDependency,
+    session: SessionDependency,
+    request: Request,
+) -> dict[str, Any]:
+    result = ingest_one(session, context, payload)
+    append_audit(
+        session,
+        context.organization_id,
+        "INGEST_SENSOR_READING",
+        f"sensor:{payload.sensor_id}",
+        user_id=context.user.id,
+        ip_address=request.client.host if request.client else None,
+    )
+    session.commit()
+    return result
+
+
+@app.post("/api/v1/ingestion/csv", tags=["ingestion"])
+async def ingest_csv(
+    file: Annotated[UploadFile, File(...)],
+    context: EngineerDependency,
+    session: SessionDependency,
+    request: Request,
+) -> dict[str, Any]:
+    settings = get_settings()
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise ApiError(422, "INVALID_FILE_TYPE", "Only .csv files are accepted")
+    raw = await file.read(settings.max_upload_bytes + 1)
+    if len(raw) > settings.max_upload_bytes:
+        raise ApiError(413, "FILE_TOO_LARGE", "CSV exceeds configured size limit")
+    try:
+        rows = list(csv.DictReader(io.StringIO(raw.decode("utf-8"))))
+    except (UnicodeDecodeError, csv.Error) as exc:
+        raise ApiError(422, "MALFORMED_CSV", "CSV must be UTF-8 with valid rows") from exc
+    required = {"sensor_id", "timestamp", "value", "unit"}
+    if not rows or not required.issubset(rows[0]):
+        raise ApiError(
+            422, "INVALID_CSV_COLUMNS", "Required columns: sensor_id,timestamp,value,unit"
+        )
+    accepted: list[dict[str, Any]] = []
+    for index, row in enumerate(rows, start=2):
+        try:
+            accepted.append(ingest_one(session, context, ReadingRequest(**row), source="CSV"))
+        except (ValueError, ApiError) as exc:
+            session.rollback()
+            message = exc.detail["message"] if isinstance(exc, ApiError) else str(exc)
+            raise ApiError(422, "INVALID_CSV_ROW", f"Row {index}: {message}") from exc
+    append_audit(
+        session,
+        context.organization_id,
+        "IMPORT_CSV",
+        "sensor_readings",
+        user_id=context.user.id,
+        ip_address=request.client.host if request.client else None,
+        metadata={"rows": len(accepted)},
+    )
+    session.commit()
+    return {"accepted": len(accepted), "items": accepted}
+
+
+def cstr_inputs_from_simulation(payload: SimulationRequest | OptimizationRequest) -> CSTRInputs:
+    return CSTRInputs(
+        feed_temperature_k=to_si(payload.temperature_c, "degC"),
+        pressure_pa=to_si(payload.pressure_bar, "bar"),
+        feed_flow_m3_s=to_si(payload.flow_m3_h, "m3/h"),
+        feed_concentration_a_mol_m3=payload.feed_concentration_mol_m3,
+        cooling_temperature_k=to_si(payload.cooling_temperature_c, "degC"),
+    )
+
+
+def serialized_metrics(
+    state: CSTRState, inputs: CSTRInputs, model: CSTRPhysicsModel
+) -> dict[str, float | None]:
+    metrics = model.metrics(state, inputs)
+    return {
+        "temperature_c": convert(state.temperature_k, "K", "degC"),
+        "conversion_pct": metrics.conversion * 100,
+        "yield_pct": metrics.yield_b * 100,
+        "selectivity_pct": metrics.selectivity_b * 100,
+        "reaction_rate_mol_m3_s": metrics.reaction_rate_b_mol_m3_s,
+        "heat_generation_kw": metrics.heat_generation_w / 1000,
+        "heat_removal_kw": metrics.heat_removal_w / 1000,
+        "residence_time_s": metrics.residence_time_s,
+        "energy_proxy_kw": metrics.heat_removal_w / 1000,
+    }
+
+
+@app.post("/api/v1/simulations", tags=["simulations"])
+def run_simulation(
+    payload: SimulationRequest,
+    context: EngineerDependency,
+    session: SessionDependency,
+    request: Request,
+) -> dict[str, Any]:
+    tenant_equipment(session, payload.equipment_id, context.organization_id)
+    inputs = cstr_inputs_from_simulation(payload)
+    model = CSTRPhysicsModel()
+    try:
+        baseline_state = model.steady_state(CSTRInputs())
+        baseline = serialized_metrics(baseline_state, CSTRInputs(), model)
+        result = model.simulate(baseline_state, inputs, (0.0, payload.duration_s), sample_count=121)
+    except RuntimeError as exc:
+        raise ApiError(422, "SIMULATION_FAILED", str(exc)) from exc
+    final = serialized_metrics(result.final_state, inputs, model)
+    trajectory = [
+        {
+            "time_s": float(time),
+            "temperature_c": convert(state.temperature_k, "K", "degC"),
+            "conversion_pct": metric.conversion * 100,
+            "yield_pct": metric.yield_b * 100,
+            "energy_proxy_kw": metric.heat_removal_w / 1000,
+        }
+        for time, state, metric in zip(result.time_s, result.states, result.metrics, strict=True)
+    ]
+    outside_range = not OptimizationService(model).envelope.contains(inputs)
+    response = {
+        "baseline": baseline,
+        "scenario": final,
+        "difference": {
+            "yield_percentage_points": final["yield_pct"] - baseline["yield_pct"],
+            "energy_kw": final["energy_proxy_kw"] - baseline["energy_proxy_kw"],
+        },
+        "trajectory": trajectory,
+        "constraint_violations": ["Outside validated model range."] if outside_range else [],
+        "source": "SIMULATED",
+        "advisory": "Simulation only. No actual plant setting has been modified.",
+    }
+    simulation = Simulation(
+        organization_id=context.organization_id,
+        equipment_id=payload.equipment_id,
+        inputs=payload.model_dump(mode="json"),
+        results=response,
+    )
+    session.add(simulation)
+    append_audit(
+        session,
+        context.organization_id,
+        "RUN_SIMULATION",
+        f"equipment:{payload.equipment_id}",
+        user_id=context.user.id,
+        ip_address=request.client.host if request.client else None,
+    )
+    session.commit()
+    return {"id": str(simulation.id), **response}
+
+
+@app.get("/api/v1/simulations/{simulation_id}", tags=["simulations"])
+def get_simulation(
+    simulation_id: UUID, context: TenantDependency, session: SessionDependency
+) -> dict[str, Any]:
+    simulation = session.scalar(
+        select(Simulation).where(
+            Simulation.id == simulation_id, Simulation.organization_id == context.organization_id
+        )
+    )
+    if simulation is None:
+        raise ApiError(404, "SIMULATION_NOT_FOUND", "Simulation not found in this organization")
+    return {
+        "id": str(simulation.id),
+        "inputs": simulation.inputs,
+        "results": simulation.results,
+        "status": simulation.status,
+        "created_at": simulation.created_at,
+    }
+
+
+@app.post("/api/v1/optimization/runs", tags=["optimization"])
+def optimize(
+    payload: OptimizationRequest,
+    context: EngineerDependency,
+    session: SessionDependency,
+    request: Request,
+) -> dict[str, Any]:
+    tenant_equipment(session, payload.equipment_id, context.organization_id)
+    baseline_inputs = cstr_inputs_from_simulation(payload)
+    optimizer = OptimizationService()
+    try:
+        result = optimizer.optimize(baseline_inputs, payload.energy_weight)
+    except (ValueError, RuntimeError) as exc:
+        raise ApiError(422, "OPTIMIZATION_REJECTED", str(exc)) from exc
+    recommended = {
+        "temperature_c": convert(result.inputs.feed_temperature_k, "K", "degC"),
+        "pressure_bar": convert(result.inputs.pressure_pa, "Pa", "bar"),
+        "flow_m3_h": convert(result.inputs.feed_flow_m3_s, "m3/s", "m3/h"),
+    }
+    response = {
+        "objective": result.objective,
+        "baseline": {
+            "yield_pct": result.baseline_yield * 100,
+            "energy_kw": result.baseline_energy_w / 1000,
+        },
+        "optimized": {
+            "yield_pct": result.optimized_yield * 100,
+            "energy_kw": result.optimized_energy_w / 1000,
+            "variables": recommended,
+        },
+        "constraints": {
+            "status": result.constraint_status,
+            "validated_operating_range": "Temperature 170–190°C; pressure 8–12 bar; flow 57.6–86.4 m³/h",
+        },
+        "advisory": result.advisory,
+    }
+    run = OptimizationRun(
+        organization_id=context.organization_id,
+        equipment_id=payload.equipment_id,
+        objective="maximize_yield_minus_energy",
+        baseline=payload.model_dump(mode="json"),
+        result=response,
+    )
+    session.add(run)
+    recommendation = Recommendation(
+        organization_id=context.organization_id,
+        equipment_id=payload.equipment_id,
+        text=f"Adjust reactor temperature toward {recommended['temperature_c']:.1f}°C and feed flow toward {recommended['flow_m3_h']:.1f} m³/h.",
+        expected_impact={
+            "yield_percentage_points": (result.optimized_yield - result.baseline_yield) * 100,
+            "energy_change_kw": (result.optimized_energy_w - result.baseline_energy_w) / 1000,
+        },
+        confidence="Physics-model estimate within configured operating envelope; validate before implementation.",
+    )
+    session.add(recommendation)
+    append_audit(
+        session,
+        context.organization_id,
+        "RUN_OPTIMIZATION",
+        f"equipment:{payload.equipment_id}",
+        user_id=context.user.id,
+        ip_address=request.client.host if request.client else None,
+    )
+    session.commit()
+    return {"id": str(run.id), "recommendation_id": str(recommendation.id), **response}
+
+
+@app.get("/api/v1/recommendations", tags=["recommendations"])
+def recommendations(
+    context: TenantDependency, session: SessionDependency, limit: int = 50
+) -> dict[str, Any]:
+    entries = list(
+        session.scalars(
+            select(Recommendation)
+            .where(Recommendation.organization_id == context.organization_id)
+            .order_by(desc(Recommendation.created_at))
+            .limit(min(max(limit, 1), 200))
+        )
+    )
+    return {
+        "items": [
+            {
+                "id": str(entry.id),
+                "equipment_id": str(entry.equipment_id),
+                "text": entry.text,
+                "expected_impact": entry.expected_impact,
+                "confidence": entry.confidence,
+                "status": entry.status,
+                "created_at": entry.created_at,
+                "advisory": "AI-generated engineering recommendation. Verify against plant operating procedures before implementation.",
+            }
+            for entry in entries
+        ]
+    }
+
+
+@app.get("/api/v1/alerts", tags=["alerts"])
+def alerts(
+    context: TenantDependency, session: SessionDependency, limit: int = 50
+) -> dict[str, Any]:
+    entries = list(
+        session.scalars(
+            select(Alert)
+            .where(Alert.organization_id == context.organization_id)
+            .order_by(desc(Alert.occurred_at))
+            .limit(min(max(limit, 1), 200))
+        )
+    )
+    return {
+        "items": [
+            {
+                "id": str(entry.id),
+                "equipment_id": str(entry.equipment_id) if entry.equipment_id else None,
+                "severity": entry.severity.value,
+                "reason": entry.reason,
+                "status": entry.status,
+                "timestamp": entry.occurred_at,
+            }
+            for entry in entries
+        ]
+    }
+
+
+@app.get("/api/v1/models", tags=["models"])
+def models(context: TenantDependency, session: SessionDependency) -> dict[str, Any]:
+    entries = list(
+        session.scalars(
+            select(ModelVersion)
+            .where(ModelVersion.organization_id == context.organization_id)
+            .order_by(desc(ModelVersion.created_at))
+        )
+    )
+    return {
+        "items": [
+            {
+                "id": str(entry.id),
+                "name": entry.name,
+                "version": entry.version,
+                "type": entry.model_type,
+                "status": entry.status,
+                "metrics": entry.metrics,
+                "features": entry.feature_schema,
+                "target": entry.target_schema,
+            }
+            for entry in entries
+        ]
+    }
+
+
+@app.post("/api/v1/models/train", tags=["models"])
+def train_model(
+    context: EngineerDependency, session: SessionDependency, request: Request
+) -> dict[str, Any]:
+    # Training is an explicit workflow, scoped to this tenant; it only registers VALIDATION models.
+    from apps.worker.processtwin_worker.train import train_all
+
+    trained = train_all(context.organization_id)
+    append_audit(
+        session,
+        context.organization_id,
+        "TRAIN_MODEL",
+        "model_registry",
+        user_id=context.user.id,
+        ip_address=request.client.host if request.client else None,
+        metadata={"registered_versions": trained},
+    )
+    session.commit()
+    return {
+        "registered_versions": trained,
+        "status": "VALIDATION",
+        "message": "No model was promoted automatically.",
+    }
+
+
+@app.post("/api/v1/models/{model_id}/promote", tags=["models"])
+def promote_model(
+    model_id: UUID, context: AdminDependency, session: SessionDependency, request: Request
+) -> dict[str, Any]:
+    candidate = session.scalar(
+        select(ModelVersion).where(
+            ModelVersion.id == model_id, ModelVersion.organization_id == context.organization_id
+        )
+    )
+    if candidate is None:
+        raise ApiError(404, "MODEL_NOT_FOUND", "Model was not found in this organization")
+    if candidate.status not in {"VALIDATION", "STAGING"}:
+        raise ApiError(
+            422, "MODEL_NOT_APPROVABLE", "Only validated or staging models may be promoted"
+        )
+    for current in session.scalars(
+        select(ModelVersion).where(
+            ModelVersion.organization_id == context.organization_id,
+            ModelVersion.name == candidate.name,
+            ModelVersion.status == "PRODUCTION",
+        )
+    ):
+        current.status = "RETIRED"
+    candidate.status = "PRODUCTION"
+    append_audit(
+        session,
+        context.organization_id,
+        "PROMOTE_MODEL",
+        f"model:{model_id}",
+        user_id=context.user.id,
+        ip_address=request.client.host if request.client else None,
+    )
+    session.commit()
+    return {"id": str(candidate.id), "status": candidate.status}
+
+
+@app.get("/api/v1/audit-log", tags=["audit"])
+def audit_log(
+    context: TenantDependency, session: SessionDependency, limit: int = 100
+) -> dict[str, Any]:
+    from .models import AuditLog
+
+    entries = list(
+        session.scalars(
+            select(AuditLog)
+            .where(AuditLog.organization_id == context.organization_id)
+            .order_by(desc(AuditLog.timestamp))
+            .limit(min(max(limit, 1), 500))
+        )
+    )
+    return {
+        "items": [
+            {
+                "id": str(entry.id),
+                "action": entry.action,
+                "resource": entry.resource,
+                "user_id": str(entry.user_id) if entry.user_id else None,
+                "timestamp": entry.timestamp,
+                "metadata": entry.metadata_json,
+            }
+            for entry in entries
+        ]
+    }
+
+
+def dashboard_payload(context: TenantContext, session: Session) -> dict[str, Any]:
+    equipment = session.scalar(
+        select(Equipment)
+        .where(Equipment.organization_id == context.organization_id)
+        .order_by(Equipment.created_at)
+    )
+    if equipment is None:
+        return {"plant_health": "NO_DATA", "message": "No equipment configured"}
+    sensors = list(
+        session.scalars(
+            select(Sensor).where(
+                Sensor.equipment_id == equipment.id,
+                Sensor.organization_id == context.organization_id,
+            )
+        )
+    )
+    latest: dict[str, dict[str, Any]] = {}
+    for sensor in sensors:
+        reading = session.scalar(
+            select(SensorReading)
+            .where(SensorReading.sensor_id == sensor.id)
+            .order_by(desc(SensorReading.timestamp))
+        )
+        if reading:
+            latest[sensor.tag] = {
+                "value": reading.value,
+                "unit": reading.unit,
+                "quality_status": reading.quality_status.value,
+                "source": reading.source,
+                "timestamp": reading.timestamp,
+            }
+    twin = DigitalTwinService()
+    nominal_inputs = CSTRInputs()
+    state = twin.physics.steady_state(nominal_inputs)
+    measured_temperature = (
+        to_si(latest["REACTOR_TEMPERATURE"]["value"], latest["REACTOR_TEMPERATURE"]["unit"])
+        if "REACTOR_TEMPERATURE" in latest
+        else None
+    )
+    snapshot = twin.snapshot(
+        state=state, inputs=nominal_inputs, measured_temperature_k=measured_temperature
+    )
+    active_alerts = (
+        session.scalar(
+            select(func.count())
+            .select_from(Alert)
+            .where(Alert.organization_id == context.organization_id, Alert.status == "OPEN")
+        )
+        or 0
+    )
+    return {
+        "equipment": {"id": str(equipment.id), "tag": equipment.tag, "name": equipment.name},
+        "plant_health": snapshot.health_status,
+        "measurements": latest,
+        "twin": {
+            "temperature": snapshot.temperature.model_dump(),
+            "conversion": snapshot.conversion.model_dump(),
+            "yield": snapshot.yield_b.model_dump(),
+            "selectivity": snapshot.selectivity_b.model_dump(),
+            "heat_removal": snapshot.heat_removal.model_dump(),
+            "divergence_temperature_k": snapshot.divergence_temperature_k,
+        },
+        "active_alerts": active_alerts,
+        "safety_notice": "Predictions and recommendations are advisory. No physical plant controls are connected.",
+    }
+
+
+@app.get("/api/v1/dashboard/summary", tags=["dashboard"])
+def dashboard(context: TenantDependency, session: SessionDependency) -> dict[str, Any]:
+    return dashboard_payload(context, session)
+
+
+@app.get(
+    "/api/v1/events/dashboard",
+    tags=["dashboard"],
+    response_class=StreamingResponse,
+)
+async def dashboard_events(
+    context: TenantDependency, session: SessionDependency
+) -> StreamingResponse:
+    async def events():
+        # Read-only SSE polling endpoint; deployments can replace this with Redis/Kafka event fanout.
+        for _ in range(60):
+            yield f"event: twin_state\ndata: {JSONResponse(content=dashboard_payload(context, session)).body.decode()}\n\n"
+            await asyncio.sleep(5)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
