@@ -18,6 +18,7 @@ class Settings:
     refresh_token_expire_days: int = 7
     cors_origins: list[str] | None = None
     max_upload_bytes: int = 5_000_000
+    mlflow_tracking_uri: str | None = None
     demo_email: str = "engineer@processtwin.demo"
     demo_password: str = "ChangeMeDemoOnly!"
 
@@ -47,6 +48,7 @@ class Settings:
                 if origin.strip()
             ],
             max_upload_bytes=integer("MAX_UPLOAD_BYTES", 5_000_000),
+            mlflow_tracking_uri=os.getenv("MLFLOW_TRACKING_URI") or None,
             demo_email=os.getenv("DEMO_EMAIL", "engineer@processtwin.demo"),
             demo_password=os.getenv("DEMO_PASSWORD", "ChangeMeDemoOnly!"),
         )

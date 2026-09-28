@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
+from typing import Any
 
 import numpy as np
 from scipy.integrate import solve_ivp
@@ -30,11 +31,35 @@ class CSTRParameters:
     heat_transfer_area_m2: float = 20.0
 
     def __post_init__(self) -> None:
-        positive = ("volume_m3", "density_kg_m3", "heat_capacity_j_kg_k")
+        values = (
+            self.volume_m3,
+            self.density_kg_m3,
+            self.heat_capacity_j_kg_k,
+            self.activation_energy_j_mol,
+            self.pre_exponential_factor_s,
+            self.reaction_enthalpy_j_mol,
+            self.side_activation_energy_j_mol,
+            self.side_pre_exponential_factor_s,
+            self.side_reaction_enthalpy_j_mol,
+            self.heat_transfer_coefficient_w_m2_k,
+            self.heat_transfer_area_m2,
+        )
+        if not np.isfinite(values).all():
+            raise ValueError("CSTR parameters must be finite SI values")
+        positive = ("volume_m3", "density_kg_m3", "heat_capacity_j_kg_k", "heat_transfer_area_m2")
         if any(getattr(self, name) <= 0.0 for name in positive):
-            raise ValueError("Reactor volume, density and heat capacity must be positive")
-        if self.pre_exponential_factor_s < 0.0 or self.side_pre_exponential_factor_s < 0.0:
-            raise ValueError("Pre-exponential factors cannot be negative")
+            raise ValueError("Reactor volume, density, heat capacity and transfer area must be positive")
+        if any(
+            value < 0.0
+            for value in (
+                self.activation_energy_j_mol,
+                self.pre_exponential_factor_s,
+                self.side_activation_energy_j_mol,
+                self.side_pre_exponential_factor_s,
+                self.heat_transfer_coefficient_w_m2_k,
+            )
+        ):
+            raise ValueError("Activation energies, pre-exponential factors and U cannot be negative")
 
     @property
     def ua_w_k(self) -> float:
@@ -43,7 +68,7 @@ class CSTRParameters:
 
 @dataclass(frozen=True)
 class CSTRInputs:
-    """Manipulated and feed values at one integration instant, in SI units."""
+    """Liquid CSTR feed, coolant and pressure inputs in SI; pressure is recorded but not in this incompressible model's rate law."""
 
     feed_flow_m3_s: float = 0.020
     feed_temperature_k: float = 453.15
@@ -52,6 +77,16 @@ class CSTRInputs:
     pressure_pa: float = 1_010_000.0
 
     def __post_init__(self) -> None:
+        if not np.isfinite(
+            (
+                self.feed_flow_m3_s,
+                self.feed_temperature_k,
+                self.feed_concentration_a_mol_m3,
+                self.cooling_temperature_k,
+                self.pressure_pa,
+            )
+        ).all():
+            raise ValueError("CSTR inputs must be finite SI values")
         if self.feed_flow_m3_s < 0.0:
             raise ValueError("Feed flow cannot be negative")
         if self.feed_temperature_k <= 0.0 or self.cooling_temperature_k <= 0.0:
@@ -198,12 +233,26 @@ class CSTRPhysicsModel:
         time_span_s: tuple[float, float],
         *,
         sample_count: int = 121,
+        sample_times_s: Sequence[float] | np.ndarray | None = None,
     ) -> SimulationResult:
         """Run a dynamic scenario; callable inputs permit scheduled disturbances."""
         if sample_count < 2 or time_span_s[1] <= time_span_s[0]:
             raise ValueError("Simulation needs at least two samples and an increasing time span")
         input_at = inputs if callable(inputs) else lambda _time: inputs
-        evaluation_times = np.linspace(*time_span_s, sample_count)
+        evaluation_times: Any
+        if sample_times_s is None:
+            evaluation_times = np.linspace(*time_span_s, sample_count)
+        else:
+            evaluation_times = np.asarray(sample_times_s, dtype=float)
+            if (
+                evaluation_times.ndim != 1
+                or len(evaluation_times) < 2
+                or not np.isfinite(evaluation_times).all()
+                or evaluation_times[0] != time_span_s[0]
+                or evaluation_times[-1] != time_span_s[1]
+                or np.any(np.diff(evaluation_times) <= 0)
+            ):
+                raise ValueError("Sample times must be finite, strictly increasing and span the simulation")
 
         solution = solve_ivp(
             lambda time, vector: self.derivatives(time, vector, input_at(time)),

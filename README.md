@@ -53,6 +53,8 @@ See [the system architecture](docs/architecture/system.md), [CSTR equations](doc
 
 Historical CSV and optional Parquet imports, configurable tag mapping, SI normalization, data-quality reporting and exploration are documented in [the historical data import guide](docs/data-import.md). Imported datasets are user-supplied and are distinct from the simulator's synthetic demo data.
 
+Bounded CSTR parameter fitting, independent model evaluation, lifecycle gates, hybrid physics/ML comparisons and drift monitoring are documented in [the calibration and monitoring guide](docs/model-calibration.md). The framework has not yet been calibrated or validated against an industrial dataset.
+
 ## Development commands
 
 | Command | Purpose |

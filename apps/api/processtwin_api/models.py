@@ -349,6 +349,96 @@ class DatasetObservation(Base):
     quality_reasons: Mapped[list[str]] = mapped_column(JSON, nullable=False)
 
 
+class PhysicsParameterSet(Timestamped, Base):
+    __tablename__ = "physics_parameter_sets"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "name", "version", name="uq_physics_parameter_set_version"),
+        Index("ix_parameter_sets_organization_id", "organization_id"),
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="INITIAL", nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    parameters: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    source: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class CalibrationRun(Timestamped, Base):
+    __tablename__ = "calibration_runs"
+    __table_args__ = (Index("ix_calibrations_organization_id", "organization_id"),)
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    dataset_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("dataset_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    parameter_set_id: Mapped[UUID] = mapped_column(
+        ForeignKey("physics_parameter_sets.id", ondelete="RESTRICT"), nullable=False
+    )
+    user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    model_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("model_versions.id", ondelete="SET NULL")
+    )
+    method: Mapped[str] = mapped_column(String(40), nullable=False)
+    objective_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    initial_parameters: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    calibrated_parameters: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    bounds: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    metrics: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    code_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    observation_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class ModelEvaluation(Timestamped, Base):
+    __tablename__ = "model_evaluations"
+    __table_args__ = (Index("ix_model_evaluations_organization_id", "organization_id"),)
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    model_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("model_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    dataset_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("dataset_versions.id", ondelete="RESTRICT"), nullable=False
+    )
+    user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    evaluation_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    metrics: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    residual_distribution: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    comparisons: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    observation_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+
+
+class ModelDriftEvent(Base):
+    __tablename__ = "model_drift_events"
+    __table_args__ = (Index("ix_model_drift_events_organization_id", "organization_id"),)
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    model_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("model_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    dataset_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("dataset_versions.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(40), nullable=False)
+    metrics: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    reasons: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+
+
 class QualityEvent(Base):
     __tablename__ = "quality_events"
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -398,6 +488,20 @@ class ModelVersion(Timestamped, Base):
     feature_schema: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     target_schema: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     metrics: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    dataset_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("dataset_versions.id", ondelete="SET NULL")
+    )
+    physics_parameter_set_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("physics_parameter_sets.id", ondelete="SET NULL")
+    )
+    training_period: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    validation_period: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    test_period: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    hyperparameters: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    operating_envelope: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    git_sha: Mapped[str | None] = mapped_column(String(80))
+    mlflow_run_id: Mapped[str | None] = mapped_column(String(64))
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     artifact_path: Mapped[str | None] = mapped_column(String(500))
 
 

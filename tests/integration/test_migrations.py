@@ -18,3 +18,11 @@ def test_historical_dataset_migration_follows_initial_schema() -> None:
     revision = scripts.get_revision("0002_historical_datasets")
     assert revision is not None
     assert revision.down_revision == "0001_initial_schema"
+
+
+def test_calibration_registry_migration_follows_historical_datasets() -> None:
+    config = Config("alembic.ini")
+    scripts = ScriptDirectory.from_config(config)
+    revision = scripts.get_revision("0003_calibration_registry")
+    assert revision is not None
+    assert revision.down_revision == "0002_historical_datasets"

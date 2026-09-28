@@ -82,3 +82,23 @@ def test_zero_flow_has_no_residence_time_and_no_convective_change() -> None:
 def test_temperature_input_must_be_kelvin() -> None:
     with pytest.raises(ValueError):
         CSTRInputs(feed_temperature_k=0.0)
+
+
+def test_material_balance_matches_flow_over_volume_and_reaction_consumption() -> None:
+    model = isothermal_model(0.2)
+    inputs = CSTRInputs(
+        feed_flow_m3_s=0.1,
+        feed_temperature_k=400.0,
+        feed_concentration_a_mol_m3=10.0,
+        pressure_pa=8.0e5,
+    )
+    state = CSTRState(4.0, 1.0, 0.0, 400.0)
+    dca = model.derivatives(0.0, state.vector(), inputs)[0]
+    assert dca == pytest.approx((0.1 / 1.0) * (10.0 - 4.0) - 0.2 * 4.0)
+
+
+def test_pressure_and_thermal_parameters_are_finite_positive_si_values() -> None:
+    with pytest.raises(ValueError, match="finite"):
+        CSTRInputs(pressure_pa=float("inf"))
+    with pytest.raises(ValueError, match="positive"):
+        CSTRParameters(heat_transfer_area_m2=0.0)

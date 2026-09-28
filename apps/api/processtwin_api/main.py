@@ -43,6 +43,7 @@ from .contracts import (
 )
 from .database import Base, engine
 from .datasets import router as datasets_router
+from .modeling import router as modeling_router
 from .models import (
     Alert,
     Equipment,
@@ -83,6 +84,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="ProcessTwin API", version="0.1.0", lifespan=lifespan)
 app.include_router(datasets_router)
+app.include_router(modeling_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_settings().cors_origins,
@@ -754,6 +756,17 @@ def models(context: TenantDependency, session: SessionDependency) -> dict[str, A
                 "metrics": entry.metrics,
                 "features": entry.feature_schema,
                 "target": entry.target_schema,
+                "dataset_version_id": str(entry.dataset_version_id) if entry.dataset_version_id else None,
+                "physics_parameter_set_id": str(entry.physics_parameter_set_id) if entry.physics_parameter_set_id else None,
+                "training_period": entry.training_period,
+                "validation_period": entry.validation_period,
+                "test_period": entry.test_period,
+                "hyperparameters": entry.hyperparameters,
+                "operating_envelope": entry.operating_envelope,
+                "git_sha": entry.git_sha,
+                "mlflow_run_id": entry.mlflow_run_id,
+                "created_by": str(entry.created_by) if entry.created_by else None,
+                "created_at": entry.created_at,
             }
             for entry in entries
         ]
@@ -796,9 +809,9 @@ def promote_model(
     )
     if candidate is None:
         raise ApiError(404, "MODEL_NOT_FOUND", "Model was not found in this organization")
-    if candidate.status not in {"VALIDATION", "STAGING"}:
+    if candidate.status != "STAGING":
         raise ApiError(
-            422, "MODEL_NOT_APPROVABLE", "Only validated or staging models may be promoted"
+            422, "MODEL_NOT_APPROVABLE", "Only explicitly staged models may be promoted"
         )
     for current in session.scalars(
         select(ModelVersion).where(
@@ -813,6 +826,33 @@ def promote_model(
         session,
         context.organization_id,
         "PROMOTE_MODEL",
+        f"model:{model_id}",
+        user_id=context.user.id,
+        ip_address=request.client.host if request.client else None,
+    )
+    session.commit()
+    return {"id": str(candidate.id), "status": candidate.status}
+
+
+@app.post("/api/v1/models/{model_id}/stage", tags=["models"])
+def stage_model(
+    model_id: UUID, context: AdminDependency, session: SessionDependency, request: Request
+) -> dict[str, str]:
+    candidate = session.scalar(
+        select(ModelVersion).where(
+            ModelVersion.id == model_id,
+            ModelVersion.organization_id == context.organization_id,
+        )
+    )
+    if candidate is None:
+        raise ApiError(404, "MODEL_NOT_FOUND", "Model was not found in this organization")
+    if candidate.status != "VALIDATED":
+        raise ApiError(422, "MODEL_NOT_VALIDATED", "Only a model with an independent VALIDATED evaluation may be staged")
+    candidate.status = "STAGING"
+    append_audit(
+        session,
+        context.organization_id,
+        "STAGE_MODEL",
         f"model:{model_id}",
         user_id=context.user.id,
         ip_address=request.client.host if request.client else None,

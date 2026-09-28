@@ -35,6 +35,7 @@ services:
       DATABASE_URL: postgresql+psycopg://processtwin:processtwin_dev_only@postgres:5432/processtwin
       JWT_SECRET: ${JWT_SECRET:-development-only-secret-change-me}
       CORS_ORIGINS: http://localhost:3000
+      MLFLOW_TRACKING_URI: http://mlflow:5000
     ports: ["8000:8000"]
     depends_on:
       demo-init:

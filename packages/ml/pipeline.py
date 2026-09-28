@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 import joblib
 import numpy as np
@@ -96,9 +96,16 @@ class ModelMetrics:
     rmse: float
     r2: float | None
     mape: float | None
+    bias: float
 
     def as_dict(self) -> dict[str, float | None]:
-        return {"mae": self.mae, "rmse": self.rmse, "r2": self.r2, "mape": self.mape}
+        return {
+            "mae": self.mae,
+            "rmse": self.rmse,
+            "r2": self.r2,
+            "mape": self.mape,
+            "bias": self.bias,
+        }
 
 
 def metrics(actual: np.ndarray, predicted: np.ndarray) -> ModelMetrics:
@@ -120,6 +127,7 @@ def metrics(actual: np.ndarray, predicted: np.ndarray) -> ModelMetrics:
         rmse=float(np.mean((actual - predicted) ** 2) ** 0.5),
         r2=r2,
         mape=mape,
+        bias=float(np.mean(predicted - actual)),
     )
 
 
@@ -158,8 +166,33 @@ class HybridResidualModel:
 class TrainingResult:
     model: HybridResidualModel
     split: TimeSplit
+    training_comparisons: dict[str, ModelMetrics]
     validation_metrics: ModelMetrics
     test_metrics: ModelMetrics
+    validation_comparisons: dict[str, ModelMetrics]
+    test_comparisons: dict[str, ModelMetrics]
+
+
+def _new_estimator(algorithm: str) -> ResidualEstimator:
+    if algorithm not in {"random_forest", "gradient_boosting"}:
+        raise ValueError("Supported algorithms: gradient_boosting, random_forest")
+    if SKLEARN_AVAILABLE and algorithm == "random_forest":
+        assert RandomForestRegressor is not None
+        return cast(
+            ResidualEstimator,
+            RandomForestRegressor(
+                n_estimators=250, min_samples_leaf=3, random_state=42, n_jobs=1
+            ),
+        )
+    if SKLEARN_AVAILABLE:
+        assert GradientBoostingRegressor is not None
+        return cast(
+            ResidualEstimator,
+            GradientBoostingRegressor(
+                n_estimators=150, max_depth=3, learning_rate=0.05, random_state=42, loss="huber"
+            ),
+        )
+    return RidgeResidualRegressor()
 
 
 def train_residual_model(
@@ -187,30 +220,38 @@ def train_residual_model(
     split = TimeSplit.ordered(len(matrix))
     train, validation, test = split.indices()
     residual = actual - baseline
-    if algorithm not in {"random_forest", "gradient_boosting"}:
-        raise ValueError("Supported algorithms: gradient_boosting, random_forest")
-    if SKLEARN_AVAILABLE and algorithm == "random_forest":
-        assert RandomForestRegressor is not None
-        estimator: ResidualEstimator = RandomForestRegressor(
-            n_estimators=250, min_samples_leaf=3, random_state=42, n_jobs=1
-        )
-    elif SKLEARN_AVAILABLE:
-        assert GradientBoostingRegressor is not None
-        estimator = GradientBoostingRegressor(
-            n_estimators=150, max_depth=3, learning_rate=0.05, random_state=42, loss="huber"
-        )
-    else:
-        estimator = RidgeResidualRegressor()
+    estimator = _new_estimator(algorithm)
     estimator.fit(matrix[train], residual[train])
     training_error = residual[train] - estimator.predict(matrix[train])
     model = HybridResidualModel(
         tuple(feature_names), estimator, float(np.std(training_error, ddof=1)), algorithm
     )
-    _, validation_prediction, _ = model.predict(matrix[validation], baseline[validation])
-    _, test_prediction, _ = model.predict(matrix[test], baseline[test])
+    ml_only = _new_estimator(algorithm)
+    ml_only.fit(matrix[train], actual[train])
+    _, training_hybrid, _ = model.predict(matrix[train], baseline[train])
+    training_comparisons = {
+        "physics_only": metrics(actual[train], baseline[train]),
+        "ml_only": metrics(actual[train], ml_only.predict(matrix[train])),
+        "physics_plus_ml_residual": metrics(actual[train], training_hybrid),
+    }
+    _, validation_hybrid, _ = model.predict(matrix[validation], baseline[validation])
+    _, test_hybrid, _ = model.predict(matrix[test], baseline[test])
+    validation_comparisons = {
+        "physics_only": metrics(actual[validation], baseline[validation]),
+        "ml_only": metrics(actual[validation], ml_only.predict(matrix[validation])),
+        "physics_plus_ml_residual": metrics(actual[validation], validation_hybrid),
+    }
+    test_comparisons = {
+        "physics_only": metrics(actual[test], baseline[test]),
+        "ml_only": metrics(actual[test], ml_only.predict(matrix[test])),
+        "physics_plus_ml_residual": metrics(actual[test], test_hybrid),
+    }
     return TrainingResult(
         model=model,
         split=split,
-        validation_metrics=metrics(actual[validation], validation_prediction),
-        test_metrics=metrics(actual[test], test_prediction),
+        training_comparisons=training_comparisons,
+        validation_metrics=validation_comparisons["physics_plus_ml_residual"],
+        test_metrics=test_comparisons["physics_plus_ml_residual"],
+        validation_comparisons=validation_comparisons,
+        test_comparisons=test_comparisons,
     )
