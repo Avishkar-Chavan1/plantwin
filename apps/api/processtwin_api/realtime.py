@@ -8,13 +8,12 @@ from typing import Any
 from uuid import UUID
 
 import numpy as np
-from sqlalchemy import desc, select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
-
 from connectors.telemetry import TelemetryMessage
 from packages.physics import CSTRInputs, CSTRParameters, CSTRPhysicsModel
 from packages.units import convert, si_unit, to_si
+from sqlalchemy import desc, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from .models import (
     Alert,
@@ -32,6 +31,7 @@ from .models import (
     TwinState,
 )
 from .quality import DataQualityService, QualityDecision
+from .time_utils import as_utc
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +184,7 @@ class LiveIngestionGateway:
             raise ValueError("Mapped sensor does not belong to the source plant")
         if message.timestamp.tzinfo is None or message.timestamp.utcoffset() is None:
             raise ValueError("Telemetry timestamp must include a timezone")
-        timestamp = message.timestamp.astimezone(UTC)
+        timestamp = as_utc(message.timestamp)
         engineering_value = convert(float(message.value), message.unit, sensor.unit)
         decision = DataQualityService().assess(session, sensor, timestamp, engineering_value)
         status = decision.status
@@ -242,7 +242,7 @@ class LiveIngestionGateway:
             session.flush()
         except IntegrityError as exc:
             raise ValueError("Sensor timestamp already exists") from exc
-        now = message.received_at.astimezone(UTC)
+        now = as_utc(message.received_at)
         source.last_message_at = now
         source.last_success_at = now
         source.freshness_s = 0.0
@@ -267,7 +267,7 @@ class LiveIngestionGateway:
         organization_id: UUID,
         now: datetime | None = None,
     ) -> tuple[TwinState | None, PotentialAnomaly | None]:
-        current_time = (now or datetime.now(UTC)).astimezone(UTC)
+        current_time = as_utc(now or datetime.now(UTC))
         sensors = list(
             session.scalars(
                 select(Sensor).where(
@@ -310,13 +310,14 @@ class LiveIngestionGateway:
                 continue
             modes.add(source_mode(latest.source))
             qualities.append(latest.quality_status)
-            ages.append(max(0.0, (current_time - latest.timestamp.astimezone(UTC)).total_seconds()))
+            latest_timestamp = as_utc(latest.timestamp)
+            ages.append(max(0.0, (current_time - latest_timestamp).total_seconds()))
             if latest.data_source_id:
                 source_ids.add(str(latest.data_source_id))
             names = [tag.canonical_name for tag in maps_by_sensor[sensor.id]] or [sensor.measurement_type]
             for name in names:
                 previous = canonical.get(name)
-                if previous is None or latest.timestamp > previous[0].timestamp:
+                if previous is None or latest_timestamp > as_utc(previous[0].timestamp):
                     canonical[name] = (latest, sensor)
         if not canonical:
             return None, None
@@ -422,11 +423,11 @@ class LiveIngestionGateway:
                         dtype=float,
                     )
                     _, hybrid_yield, interval = artifact.predict(
-                        features, np.asarray([model_metrics.yield_b], dtype=float)
+                        features, np.asarray([metrics.yield_b], dtype=float)
                     )
-                    prediction["physics_yield"] = model_metrics.yield_b
+                    prediction["physics_yield"] = metrics.yield_b
                     prediction["yield"] = float(hybrid_yield[0])
-                    ml_residual = abs(float(hybrid_yield[0]) - model_metrics.yield_b)
+                    ml_residual = abs(float(hybrid_yield[0]) - metrics.yield_b)
                     uncertainty["yield_fraction"] = float(interval[0])
                     status = "VALIDATED_HYBRID"
             except (ValueError, RuntimeError) as exc:

@@ -7,20 +7,18 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import desc, select
-from sqlalchemy.orm import Session
 
 from .audit import append_audit
 from .auth import SessionDependency, TenantContext, require_roles, tenant_context
 from .models import (
-    DataSource,
     Equipment,
-    ModelVersion,
     PotentialAnomaly,
     Recommendation,
     RecommendationReview,
     RoleName,
     TwinState,
 )
+from .time_utils import as_utc
 
 router = APIRouter(tags=["digital-twin-advisory"])
 TenantDependency = Annotated[TenantContext, Depends(tenant_context)]
@@ -40,8 +38,10 @@ def _raise(code: str, message: str, status: int = 422) -> None:
 
 
 def _recommendation_payload(item: Recommendation, now: datetime) -> dict[str, Any]:
+    current_time = as_utc(now)
+    expires_at = as_utc(item.expires_at) if item.expires_at else None
     state = item.status
-    if item.expires_at and item.expires_at <= now and state == "GENERATED":
+    if expires_at and expires_at <= current_time and state == "GENERATED":
         state = "EXPIRED"
     return {
         "id": str(item.id),
@@ -59,7 +59,7 @@ def _recommendation_payload(item: Recommendation, now: datetime) -> dict[str, An
         "confidence": item.confidence,
         "text": item.text,
         "status": state,
-        "expires_at": item.expires_at,
+        "expires_at": expires_at,
         "advisory": "Recommendation is advisory only. No ProcessTwin connector can send plant-control commands.",
     }
 
@@ -183,7 +183,9 @@ def review_recommendation(
     if item is None:
         _raise("RECOMMENDATION_NOT_FOUND", "Recommendation was not found", 404)
     now = datetime.now(UTC)
-    if item.status in {"ACCEPTED", "REJECTED", "EXPIRED"} or (item.expires_at and item.expires_at <= now):
+    if item.status in {"ACCEPTED", "REJECTED", "EXPIRED"} or (
+        item.expires_at and as_utc(item.expires_at) <= now
+    ):
         _raise("RECOMMENDATION_NOT_REVIEWABLE", "Recommendation is final or expired", 409)
     if payload.decision == "REVIEWED" and item.status != "GENERATED":
         _raise("INVALID_REVIEW_TRANSITION", "Only generated recommendations may be marked reviewed", 409)

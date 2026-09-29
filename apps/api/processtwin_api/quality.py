@@ -11,6 +11,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from .models import QualityEvent, QualityStatusName, Sensor, SensorReading
+from .time_utils import as_utc
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,7 @@ class DataQualityService:
     def assess(
         self, session: Session, sensor: Sensor, timestamp: datetime, value: float
     ) -> QualityDecision:
+        timestamp = as_utc(timestamp)
         if not isfinite(value):
             return QualityDecision(
                 QualityStatusName.BAD, "IMPOSSIBLE_VALUE", "Reading is not finite"
@@ -46,7 +48,7 @@ class DataQualityService:
                 .limit(6)
             )
         )
-        if previous and timestamp <= previous[0].timestamp:
+        if previous and timestamp <= as_utc(previous[0].timestamp):
             return QualityDecision(
                 QualityStatusName.BAD,
                 "OUT_OF_ORDER",
@@ -85,7 +87,7 @@ class DataQualityService:
                 QualityEvent(
                     organization_id=organization_id,
                     sensor_id=sensor_id,
-                    reading_timestamp=timestamp,
+                    reading_timestamp=as_utc(timestamp),
                     event_type=decision.event_type,
                     detail=decision.detail or decision.event_type,
                 )

@@ -37,3 +37,11 @@ def test_held_out_metrics_are_reported_without_mape_zero_division() -> None:
     result = train_residual_model(features, actual, physics, ["temperature", "flow"])
     assert result.test_metrics.mae < 0.01
     assert result.test_metrics.mape is not None
+
+
+def test_residual_model_selection_uses_validation_not_held_out_test_window() -> None:
+    features, actual, physics = synthetic_training_data()
+    result = train_residual_model(features, actual, physics, ["temperature", "flow"])
+    # The smooth residual extrapolates linearly; validation selects ridge over a tree
+    # without inspecting the chronological test partition.
+    assert result.model.algorithm == "ridge"

@@ -187,4 +187,3 @@ class MqttReadOnlySubscriber:
                 self.monitor.record_message(parsed, successful=False)
             self.monitor.record_error(exc)
             logger.warning("MQTT message rejected; reason=%s", type(exc).__name__)
-*** End Patch

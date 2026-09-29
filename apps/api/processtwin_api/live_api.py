@@ -8,18 +8,17 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import desc, select
-from sqlalchemy.orm import Session
 
 from .audit import append_audit
 from .auth import SessionDependency, TenantContext, require_roles, tenant_context
 from .models import (
     DataSource,
     Equipment,
-    Organization,
     Plant,
     Sensor,
     SourceTagMapping,
 )
+from .time_utils import as_utc
 
 router = APIRouter(prefix="/api/v1/data-sources", tags=["live-read-only-ingestion"])
 TenantDependency = Annotated[TenantContext, Depends(tenant_context)]
@@ -74,7 +73,7 @@ def _raise(code: str, message: str, status: int = 422) -> None:
 def _source_payload(source: DataSource, now: datetime | None = None) -> dict[str, Any]:
     current = now or datetime.now(UTC)
     freshness = (
-        max(0.0, (current - source.last_success_at.astimezone(UTC)).total_seconds())
+        max(0.0, (as_utc(current) - as_utc(source.last_success_at)).total_seconds())
         if source.last_success_at
         else None
     )
@@ -94,8 +93,8 @@ def _source_payload(source: DataSource, now: datetime | None = None) -> dict[str
         "endpoint": source.endpoint,
         "read_only": source.read_only,
         "status": status,
-        "last_success_at": source.last_success_at,
-        "last_message_at": source.last_message_at,
+        "last_success_at": as_utc(source.last_success_at) if source.last_success_at else None,
+        "last_message_at": as_utc(source.last_message_at) if source.last_message_at else None,
         "message_rate_per_minute": source.message_rate_per_minute,
         "latency_ms": source.latency_ms,
         "error_count": source.error_count,
@@ -134,7 +133,6 @@ def create_source(
         _raise("PLANT_NOT_FOUND", "Plant was not found in this organization", 404)
     if len({item.source_key for item in payload.mappings}) != len(payload.mappings):
         _raise("DUPLICATE_SOURCE_KEY", "Each connector source key must be mapped once")
-    sensors: dict[UUID, Sensor] = {}
     for item in payload.mappings:
         sensor = session.scalar(
             select(Sensor)
@@ -153,9 +151,8 @@ def create_source(
             from packages.units import convert
 
             convert(1.0, item.source_unit, sensor.unit)
-        except ValueError as exc:
+        except ValueError:
             _raise("INVALID_SOURCE_UNIT", f"Source unit for {item.source_key} is incompatible with sensor unit {sensor.unit}")
-        sensors[item.sensor_id] = sensor
     config: dict[str, Any] = {
         "stale_after_s": payload.stale_after_s,
         "mqtt_port": payload.mqtt_port,

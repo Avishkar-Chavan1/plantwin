@@ -30,7 +30,7 @@ class ResidualEstimator(Protocol):
 
 @dataclass
 class RidgeResidualRegressor:
-    """Dependency-light regularized linear residual learner used only when sklearn cannot import."""
+    """Regularized linear residual learner and extrapolation-aware validation candidate."""
 
     regularization: float = 1e-6
     coefficients: np.ndarray | None = None
@@ -174,8 +174,10 @@ class TrainingResult:
 
 
 def _new_estimator(algorithm: str) -> ResidualEstimator:
+    if algorithm == "ridge":
+        return RidgeResidualRegressor()
     if algorithm not in {"random_forest", "gradient_boosting"}:
-        raise ValueError("Supported algorithms: gradient_boosting, random_forest")
+        raise ValueError("Supported algorithms: gradient_boosting, random_forest, ridge")
     if SKLEARN_AVAILABLE and algorithm == "random_forest":
         assert RandomForestRegressor is not None
         return cast(
@@ -193,6 +195,34 @@ def _new_estimator(algorithm: str) -> ResidualEstimator:
             ),
         )
     return RidgeResidualRegressor()
+
+
+def _select_residual_estimator(
+    *,
+    algorithm: str,
+    features: np.ndarray,
+    actual: np.ndarray,
+    baseline: np.ndarray,
+    train: slice,
+    validation: slice,
+) -> tuple[str, ResidualEstimator]:
+    """Choose a residual learner using only the chronological validation window.
+
+    Tree ensembles do not extrapolate beyond their fitted feature ranges. A ridge residual
+    candidate is therefore evaluated alongside them; this is particularly important when
+    validation represents a later operating window. The held-out test window is never used
+    for selection.
+    """
+    candidate_names = [algorithm] if algorithm == "ridge" else [algorithm, "ridge"]
+    residual = actual - baseline
+    scored: list[tuple[float, str, ResidualEstimator]] = []
+    for candidate_name in candidate_names:
+        estimator = _new_estimator(candidate_name)
+        estimator.fit(features[train], residual[train])
+        prediction = baseline[validation] + estimator.predict(features[validation])
+        scored.append((metrics(actual[validation], prediction).mae, candidate_name, estimator))
+    _, selected_name, selected = min(scored, key=lambda item: item[0])
+    return selected_name, selected
 
 
 def train_residual_model(
@@ -220,11 +250,17 @@ def train_residual_model(
     split = TimeSplit.ordered(len(matrix))
     train, validation, test = split.indices()
     residual = actual - baseline
-    estimator = _new_estimator(algorithm)
-    estimator.fit(matrix[train], residual[train])
+    selected_algorithm, estimator = _select_residual_estimator(
+        algorithm=algorithm,
+        features=matrix,
+        actual=actual,
+        baseline=baseline,
+        train=train,
+        validation=validation,
+    )
     training_error = residual[train] - estimator.predict(matrix[train])
     model = HybridResidualModel(
-        tuple(feature_names), estimator, float(np.std(training_error, ddof=1)), algorithm
+        tuple(feature_names), estimator, float(np.std(training_error, ddof=1)), selected_algorithm
     )
     ml_only = _new_estimator(algorithm)
     ml_only.fit(matrix[train], actual[train])

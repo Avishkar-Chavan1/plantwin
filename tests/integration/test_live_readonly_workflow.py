@@ -1,28 +1,25 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import pytest
-from fastapi.testclient import TestClient
-
 from apps.api.processtwin_api.database import SessionLocal
 from apps.api.processtwin_api.models import (
     DataSource,
     ModelVersion,
     OrganizationMembership,
     PhysicsParameterSet,
-    QualityStatusName,
     Sensor,
-    SensorReading,
-    SourceTagMapping,
     TwinState,
 )
 from apps.api.processtwin_api.realtime import LiveIngestionGateway
 from connectors.mqtt.adapter import MqttReadingAdapter
 from connectors.telemetry import SourceHealthMonitor, TelemetryMessage
+from fastapi.testclient import TestClient
 from packages.calibration import parameter_catalog
+from sqlalchemy import select
 from tests.integration.test_historical_datasets import tenant_client
-
 
 REQUIRED_TAGS = (
     ("feed_flow", "reactor.feed_flow", "flow", "m3/h", "m3/h"),
@@ -80,13 +77,17 @@ def configure_live_fixture() -> tuple[TestClient, dict[str, str], object, dict[s
     )
     assert created.status_code == 201, created.text
     with SessionLocal() as session:
-        source = session.get(DataSource, created.json()["id"])
+        # HTTP JSON serializes UUIDs as strings; SQLAlchemy's UUID column expects a UUID object.
+        source = session.get(DataSource, UUID(created.json()["id"]))
         assert source is not None
         session.expunge(source)
-        for sensor in sensors.values():
-            session.refresh(sensor)
+        loaded_sensors: dict[str, Sensor] = {}
+        for key, sensor_id in sensor_ids.items():
+            sensor = session.get(Sensor, sensor_id)
+            assert sensor is not None
             session.expunge(sensor)
-    sensors = {key: sensor for key, sensor in sensors.items()}
+            loaded_sensors[key] = sensor
+    sensors = loaded_sensors
     return client, headers, plant, sensors, source
 
 
@@ -134,8 +135,11 @@ def test_read_only_source_ingestion_twin_anomaly_optimization_review_audit() -> 
         assert last_result["accepted"] is True
         session.commit()
         twin = session.scalar(
-            session.query(TwinState)
-            .filter(TwinState.organization_id == organization_id, TwinState.equipment_id == equipment_id)
+            select(TwinState)
+            .where(
+                TwinState.organization_id == organization_id,
+                TwinState.equipment_id == equipment_id,
+            )
             .order_by(TwinState.timestamp.desc())
         )
         assert twin is not None

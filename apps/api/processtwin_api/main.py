@@ -5,7 +5,7 @@ import csv
 import io
 import logging
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -47,7 +47,6 @@ from .live_api import router as live_router
 from .modeling import router as modeling_router
 from .models import (
     Alert,
-    DataSource,
     Equipment,
     ModelVersion,
     OptimizationRun,
