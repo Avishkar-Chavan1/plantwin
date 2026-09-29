@@ -43,13 +43,16 @@ from .contracts import (
 )
 from .database import Base, engine
 from .datasets import router as datasets_router
+from .live_api import router as live_router
 from .modeling import router as modeling_router
 from .models import (
     Alert,
+    DataSource,
     Equipment,
     ModelVersion,
     OptimizationRun,
     OrganizationMembership,
+    PhysicsParameterSet,
     Plant,
     QualityEvent,
     QualityStatusName,
@@ -58,9 +61,11 @@ from .models import (
     Sensor,
     SensorReading,
     Simulation,
+    TwinState,
     User,
 )
 from .quality import DataQualityService
+from .workflow_api import router as workflow_router
 
 logger = logging.getLogger("processtwin.api")
 REQUESTS = Counter(
@@ -84,7 +89,9 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="ProcessTwin API", version="0.1.0", lifespan=lifespan)
 app.include_router(datasets_router)
+app.include_router(live_router)
 app.include_router(modeling_router)
+app.include_router(workflow_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_settings().cors_origins,
@@ -313,6 +320,7 @@ def list_sensors(context: TenantDependency, session: SessionDependency) -> dict[
         "items": [
             {
                 "id": str(sensor.id),
+                "equipment_id": str(sensor.equipment_id),
                 "tag": sensor.tag,
                 "name": sensor.name,
                 "unit": sensor.unit,
@@ -517,12 +525,80 @@ def cstr_inputs_from_simulation(payload: SimulationRequest | OptimizationRequest
     )
 
 
+def validated_cstr_configuration(
+    session: Session, organization_id: UUID, model_version_id: UUID | None
+) -> tuple[ModelVersion, CSTRPhysicsModel, Any]:
+    query = select(ModelVersion).where(
+        ModelVersion.organization_id == organization_id,
+        ModelVersion.model_type == "physics_cstr",
+        ModelVersion.status.in_(("VALIDATED", "PRODUCTION")),
+    )
+    if model_version_id is not None:
+        query = query.where(ModelVersion.id == model_version_id)
+    model_version = session.scalar(query.order_by(desc(ModelVersion.created_at)).limit(1))
+    if model_version is None:
+        raise ApiError(
+            422,
+            "VALIDATED_MODEL_REQUIRED",
+            "Select a tenant-owned VALIDATED/PRODUCTION CSTR model version before optimizing",
+        )
+    if not model_version.operating_envelope:
+        raise ApiError(422, "MODEL_ENVELOPE_REQUIRED", "Validated model has no configured operating envelope")
+    parameter_set = session.get(PhysicsParameterSet, model_version.physics_parameter_set_id) if model_version.physics_parameter_set_id else None
+    if parameter_set is None or parameter_set.organization_id != organization_id:
+        raise ApiError(422, "MODEL_PARAMETERS_REQUIRED", "Validated model has no tenant-owned parameter set")
+    from .realtime import parameter_set_from_values
+
+    return model_version, CSTRPhysicsModel(parameter_set_from_values(parameter_set.parameters)), parameter_set
+
+
+def optimization_envelope(model_version: ModelVersion, physics: CSTRPhysicsModel) -> Any:
+    from packages.optimization import OperatingEnvelope
+
+    configured = model_version.operating_envelope
+    aliases = {
+        "temperature_k": ("temperature_k", 1.0, 0.0),
+        "temperature_c": ("temperature_k", 1.0, 273.15),
+        "pressure_pa": ("pressure_pa", 1.0, 0.0),
+        "pressure_bar": ("pressure_pa", 100_000.0, 0.0),
+        "feed_flow_m3_s": ("flow_m3_s", 1.0, 0.0),
+        "feed_flow_kg_s": ("flow_m3_s", 1.0 / physics.parameters.density_kg_m3, 0.0),
+        "feed_flow_kg_h": ("flow_m3_s", 1.0 / (3600.0 * physics.parameters.density_kg_m3), 0.0),
+    }
+    converted: dict[str, tuple[float, float]] = {}
+    for key, value in configured.items():
+        if key not in aliases:
+            continue
+        name, scale, offset = aliases[key]
+        low = float(value["minimum"]) * scale + offset
+        high = float(value["maximum"]) * scale + offset
+        if name in converted and converted[name] != (low, high):
+            raise ApiError(422, "INVALID_MODEL_ENVELOPE", f"Conflicting envelope definitions for {name}")
+        converted[name] = (low, high)
+    required = {"temperature_k", "pressure_pa", "flow_m3_s"}
+    if not required.issubset(converted):
+        raise ApiError(422, "INCOMPLETE_MODEL_ENVELOPE", "Optimization requires temperature, pressure and feed-flow envelope bounds")
+    temperature = converted["temperature_k"]
+    pressure = converted["pressure_pa"]
+    flow = converted["flow_m3_s"]
+    return OperatingEnvelope(
+        temperature_k_min=temperature[0],
+        temperature_k_max=temperature[1],
+        pressure_pa_min=pressure[0],
+        pressure_pa_max=pressure[1],
+        flow_m3_s_min=flow[0],
+        flow_m3_s_max=flow[1],
+        max_energy_w=float(configured.get("max_energy_w", 1_000_000.0)),
+    )
+
+
 def serialized_metrics(
     state: CSTRState, inputs: CSTRInputs, model: CSTRPhysicsModel
 ) -> dict[str, float | None]:
     metrics = model.metrics(state, inputs)
     return {
         "temperature_c": convert(state.temperature_k, "K", "degC"),
+        "pressure_bar": convert(inputs.pressure_pa, "Pa", "bar"),
         "conversion_pct": metrics.conversion * 100,
         "yield_pct": metrics.yield_b * 100,
         "selectivity_pct": metrics.selectivity_b * 100,
@@ -543,7 +619,16 @@ def run_simulation(
 ) -> dict[str, Any]:
     tenant_equipment(session, payload.equipment_id, context.organization_id)
     inputs = cstr_inputs_from_simulation(payload)
+    model_version: ModelVersion | None = None
+    parameter_set: PhysicsParameterSet | None = None
     model = CSTRPhysicsModel()
+    envelope: dict[str, Any] = {}
+    warnings: list[str] = ["SIMULATION MODE: scenario values are computed; no live measurements or control commands are used."]
+    if payload.model_version_id is not None:
+        model_version, model, parameter_set = validated_cstr_configuration(
+            session, context.organization_id, payload.model_version_id
+        )
+        envelope = model_version.operating_envelope
     try:
         baseline_state = model.steady_state(CSTRInputs())
         baseline = serialized_metrics(baseline_state, CSTRInputs(), model)
@@ -561,16 +646,36 @@ def run_simulation(
         }
         for time, state, metric in zip(result.time_s, result.states, result.metrics, strict=True)
     ]
-    outside_range = not OptimizationService(model).envelope.contains(inputs)
+    configured_envelope = (
+        optimization_envelope(model_version, model)
+        if model_version is not None
+        else OptimizationService(model).envelope
+    )
+    outside_range = not configured_envelope.contains(inputs)
+    if model_version is None:
+        warnings.append("UNVALIDATED_REFERENCE_MODEL: this what-if uses demonstrator defaults, not a validated plant model.")
+    if outside_range:
+        warnings.append("OUTSIDE VALIDATED MODEL RANGE: simulated extrapolation is illustrative and not predictive.")
     response = {
+        "mode": "SIMULATION",
         "baseline": baseline,
         "scenario": final,
         "difference": {
             "yield_percentage_points": final["yield_pct"] - baseline["yield_pct"],
             "energy_kw": final["energy_proxy_kw"] - baseline["energy_proxy_kw"],
+            "temperature_c": final["temperature_c"] - baseline["temperature_c"],
+            "pressure_bar": final["pressure_bar"] - baseline["pressure_bar"],
+            "conversion_percentage_points": final["conversion_pct"] - baseline["conversion_pct"],
+            "selectivity_percentage_points": final["selectivity_pct"] - baseline["selectivity_pct"],
         },
         "trajectory": trajectory,
         "constraint_violations": ["Outside validated model range."] if outside_range else [],
+        "model_validity": "UNVALIDATED_REFERENCE" if model_version is None else ("OUTSIDE_VALIDATED_MODEL_RANGE" if outside_range else "VALIDATED_MODEL_RANGE"),
+        "model_version_id": str(model_version.id) if model_version else None,
+        "physics_parameter_set_id": str(parameter_set.id) if parameter_set else None,
+        "operating_envelope": envelope,
+        "uncertainty": {"status": "UNAVAILABLE", "reason": "No scenario uncertainty estimator is configured"},
+        "warnings": warnings,
         "source": "SIMULATED",
         "advisory": "Simulation only. No actual plant setting has been modified.",
     }
@@ -579,6 +684,11 @@ def run_simulation(
         equipment_id=payload.equipment_id,
         inputs=payload.model_dump(mode="json"),
         results=response,
+        user_id=context.user.id,
+        model_version_id=model_version.id if model_version else None,
+        physics_parameter_set_id=parameter_set.id if parameter_set else None,
+        operating_envelope=envelope,
+        warnings=warnings,
     )
     session.add(simulation)
     append_audit(
@@ -621,32 +731,47 @@ def optimize(
     request: Request,
 ) -> dict[str, Any]:
     tenant_equipment(session, payload.equipment_id, context.organization_id)
+    model_version, physics, parameter_set = validated_cstr_configuration(
+        session, context.organization_id, payload.model_version_id
+    )
     baseline_inputs = cstr_inputs_from_simulation(payload)
-    optimizer = OptimizationService()
     try:
+        envelope = optimization_envelope(model_version, physics)
+        optimizer = OptimizationService(physics=physics, envelope=envelope)
         result = optimizer.optimize(baseline_inputs, payload.energy_weight)
     except (ValueError, RuntimeError) as exc:
         raise ApiError(422, "OPTIMIZATION_REJECTED", str(exc)) from exc
+    baseline_state = physics.steady_state(baseline_inputs)
+    optimized_state = physics.steady_state(result.inputs)
+    baseline_metrics = serialized_metrics(baseline_state, baseline_inputs, physics)
+    optimized_metrics = serialized_metrics(optimized_state, result.inputs, physics)
     recommended = {
         "temperature_c": convert(result.inputs.feed_temperature_k, "K", "degC"),
         "pressure_bar": convert(result.inputs.pressure_pa, "Pa", "bar"),
         "flow_m3_h": convert(result.inputs.feed_flow_m3_s, "m3/s", "m3/h"),
     }
     response = {
-        "objective": result.objective,
-        "baseline": {
-            "yield_pct": result.baseline_yield * 100,
-            "energy_kw": result.baseline_energy_w / 1000,
+        "model_validity": "VALIDATED_MODEL_RANGE",
+        "model_version_id": str(model_version.id),
+        "physics_parameter_set_id": str(parameter_set.id),
+        "algorithm": "scipy.differential_evolution",
+        "objective": {"name": "maximize_yield_minus_energy", "weight": payload.energy_weight, "value": result.objective},
+        "bounds": {
+            "temperature_k": [envelope.temperature_k_min, envelope.temperature_k_max],
+            "pressure_pa": [envelope.pressure_pa_min, envelope.pressure_pa_max],
+            "feed_flow_m3_s": [envelope.flow_m3_s_min, envelope.flow_m3_s_max],
+            "max_energy_w": envelope.max_energy_w,
         },
-        "optimized": {
-            "yield_pct": result.optimized_yield * 100,
-            "energy_kw": result.optimized_energy_w / 1000,
-            "variables": recommended,
-        },
+        "baseline": baseline_metrics,
+        "optimized": {**optimized_metrics, "variables": recommended},
+        "objective_improvement": result.objective - (result.baseline_yield - payload.energy_weight * (result.baseline_energy_w / envelope.max_energy_w)),
+        "energy_impact_kw": (result.optimized_energy_w - result.baseline_energy_w) / 1000,
         "constraints": {
             "status": result.constraint_status,
-            "validated_operating_range": "Temperature 170–190°C; pressure 8–12 bar; flow 57.6–86.4 m³/h",
+            "hard_energy_limit_w": envelope.max_energy_w,
+            "operating_envelope": model_version.operating_envelope,
         },
+        "uncertainty": {"status": "UNAVAILABLE", "reason": "No uncertainty estimator is registered for this operating point"},
         "advisory": result.advisory,
     }
     run = OptimizationRun(
@@ -655,19 +780,73 @@ def optimize(
         objective="maximize_yield_minus_energy",
         baseline=payload.model_dump(mode="json"),
         result=response,
+        user_id=context.user.id,
+        model_version_id=model_version.id,
+        physics_parameter_set_id=parameter_set.id,
+        algorithm="scipy.differential_evolution",
+        bounds=response["bounds"],
+        constraints=response["constraints"],
+        uncertainty=response["uncertainty"],
+        status="COMPLETED" if result.constraint_status == "PASS" else "INFEASIBLE",
     )
     session.add(run)
-    recommendation = Recommendation(
-        organization_id=context.organization_id,
-        equipment_id=payload.equipment_id,
-        text=f"Adjust reactor temperature toward {recommended['temperature_c']:.1f}°C and feed flow toward {recommended['flow_m3_h']:.1f} m³/h.",
-        expected_impact={
-            "yield_percentage_points": (result.optimized_yield - result.baseline_yield) * 100,
-            "energy_change_kw": (result.optimized_energy_w - result.baseline_energy_w) / 1000,
-        },
-        confidence="Physics-model estimate within configured operating envelope; validate before implementation.",
-    )
-    session.add(recommendation)
+    recommendation = None
+    simulation = None
+    if result.constraint_status == "PASS":
+        simulation_response = {
+            "mode": "SIMULATION",
+            "baseline": baseline_metrics,
+            "scenario": optimized_metrics,
+            "difference": {
+                "yield_percentage_points": optimized_metrics["yield_pct"] - baseline_metrics["yield_pct"],
+                "energy_kw": optimized_metrics["energy_proxy_kw"] - baseline_metrics["energy_proxy_kw"],
+                "temperature_c": optimized_metrics["temperature_c"] - baseline_metrics["temperature_c"],
+                "pressure_bar": optimized_metrics["pressure_bar"] - baseline_metrics["pressure_bar"],
+                "conversion_percentage_points": optimized_metrics["conversion_pct"] - baseline_metrics["conversion_pct"],
+                "selectivity_percentage_points": optimized_metrics["selectivity_pct"] - baseline_metrics["selectivity_pct"],
+            },
+            "model_validity": "VALIDATED_MODEL_RANGE",
+            "model_version_id": str(model_version.id),
+            "physics_parameter_set_id": str(parameter_set.id),
+            "constraints": response["constraints"],
+            "uncertainty": response["uncertainty"],
+            "warnings": ["SIMULATION MODE: optimization output is a model scenario, not a plant command."],
+            "source": "SIMULATED",
+        }
+        simulation = Simulation(
+            organization_id=context.organization_id,
+            equipment_id=payload.equipment_id,
+            inputs={**payload.model_dump(mode="json"), "optimized": recommended},
+            results=simulation_response,
+            user_id=context.user.id,
+            model_version_id=model_version.id,
+            physics_parameter_set_id=parameter_set.id,
+            operating_envelope=model_version.operating_envelope,
+            warnings=simulation_response["warnings"],
+        )
+        session.add(simulation)
+        session.flush()
+        recommendation = Recommendation(
+            organization_id=context.organization_id,
+            equipment_id=payload.equipment_id,
+            text=f"Consider reviewing the model scenario: temperature {recommended['temperature_c']:.1f}°C and feed flow {recommended['flow_m3_h']:.1f} m³/h.",
+            expected_impact={
+                "yield_percentage_points": (result.optimized_yield - result.baseline_yield) * 100,
+                "objective_improvement": response["objective_improvement"],
+            },
+            confidence="Computed from a VALIDATED model and the recorded operating envelope; not guaranteed plant performance.",
+            status="GENERATED",
+            simulation_id=simulation.id,
+            optimization_run_id=run.id,
+            model_version_id=model_version.id,
+            baseline=baseline_metrics,
+            proposed_change=recommended,
+            energy_impact={"change_kw": response["energy_impact_kw"], "baseline_kw": baseline_metrics["energy_proxy_kw"], "scenario_kw": optimized_metrics["energy_proxy_kw"]},
+            uncertainty=response["uncertainty"],
+            constraint_status=result.constraint_status,
+            expires_at=datetime.now(UTC) + timedelta(days=7),
+        )
+        session.add(recommendation)
     append_audit(
         session,
         context.organization_id,
@@ -677,7 +856,12 @@ def optimize(
         ip_address=request.client.host if request.client else None,
     )
     session.commit()
-    return {"id": str(run.id), "recommendation_id": str(recommendation.id), **response}
+    return {
+        "id": str(run.id),
+        "simulation_id": str(simulation.id) if simulation else None,
+        "recommendation_id": str(recommendation.id) if recommendation else None,
+        **response,
+    }
 
 
 @app.get("/api/v1/recommendations", tags=["recommendations"])
@@ -907,13 +1091,21 @@ def dashboard_payload(context: TenantContext, session: Session) -> dict[str, Any
         )
     )
     latest: dict[str, dict[str, Any]] = {}
+    modes: set[str] = set()
     for sensor in sensors:
         reading = session.scalar(
             select(SensorReading)
-            .where(SensorReading.sensor_id == sensor.id)
+            .where(
+                SensorReading.sensor_id == sensor.id,
+                SensorReading.organization_id == context.organization_id,
+                SensorReading.quality_status.in_((QualityStatusName.GOOD, QualityStatusName.SUSPECT)),
+            )
             .order_by(desc(SensorReading.timestamp))
         )
         if reading:
+            from .realtime import source_mode
+
+            modes.add(source_mode(reading.source))
             latest[sensor.tag] = {
                 "value": reading.value,
                 "unit": reading.unit,
@@ -921,6 +1113,70 @@ def dashboard_payload(context: TenantContext, session: Session) -> dict[str, Any
                 "source": reading.source,
                 "timestamp": reading.timestamp,
             }
+    if len(modes) > 1:
+        return {
+            "equipment": {"id": str(equipment.id), "tag": equipment.tag, "name": equipment.name},
+            "source_mode": "MIXED_DATA_BLOCKED",
+            "plant_health": "MIXED_DATA_BLOCKED",
+            "measurements": {},
+            "twin": None,
+            "active_alerts": 0,
+            "safety_notice": "SIMULATION, HISTORICAL and LIVE READ-ONLY values are never combined. Select a consistent source mode.",
+        }
+    mode = next(iter(modes)) if modes else "NO_DATA"
+    if mode in {"LIVE_READ_ONLY", "HISTORICAL"}:
+        stored = session.scalar(
+            select(TwinState)
+            .where(
+                TwinState.organization_id == context.organization_id,
+                TwinState.equipment_id == equipment.id,
+                TwinState.source_mode == mode,
+            )
+            .order_by(desc(TwinState.timestamp))
+            .limit(1)
+        )
+        if stored is None:
+            twin_body = None
+            health_status = "WAITING_FOR_SYNCHRONIZED_TWIN"
+        else:
+            physics_state = stored.state.get("physics", {})
+            measured = stored.state.get("measurements", {})
+            measured_temperature = measured.get("reactor.temperature", {})
+            selected_temperature = measured_temperature.get("normalized_value")
+            if selected_temperature is None:
+                selected_temperature = physics_state.get("temperature_k")
+            twin_body = {
+                "temperature": {
+                    "value": convert(float(selected_temperature), "K", "degC") if selected_temperature is not None else None,
+                    "unit": "degC",
+                    "source": "MEASURED" if measured_temperature else "ESTIMATED",
+                    "timestamp": stored.timestamp,
+                    "quality_status": measured_temperature.get("quality_status", "GOOD"),
+                },
+                "conversion": {"value": physics_state.get("conversion", 0.0) * 100, "unit": "%", "source": "ESTIMATED", "timestamp": stored.timestamp, "quality_status": "GOOD"},
+                "yield": {"value": physics_state.get("yield", 0.0) * 100, "unit": "%", "source": "ESTIMATED", "timestamp": stored.timestamp, "quality_status": "GOOD"},
+                "selectivity": {"value": physics_state.get("selectivity", 0.0) * 100, "unit": "%", "source": "ESTIMATED", "timestamp": stored.timestamp, "quality_status": "GOOD"},
+                "heat_removal": {"value": physics_state.get("heat_removal_w", 0.0) / 1000, "unit": "kW", "source": "ESTIMATED", "timestamp": stored.timestamp, "quality_status": "GOOD"},
+                "divergence_temperature_k": stored.state.get("physics_residual_temperature_k"),
+                "prediction_status": stored.prediction_status,
+                "uncertainty": stored.uncertainty,
+                "data_quality": stored.data_quality,
+                "health_factors": stored.health_factors,
+                "model_version_id": str(stored.model_version_id) if stored.model_version_id else None,
+                "physics_parameter_set_id": str(stored.physics_parameter_set_id) if stored.physics_parameter_set_id else None,
+            }
+            health_status = stored.health_status
+        return {
+            "equipment": {"id": str(equipment.id), "tag": equipment.tag, "name": equipment.name},
+            "source_mode": mode,
+            "plant_health": health_status,
+            "measurements": latest,
+            "twin": twin_body,
+            "active_alerts": 0,
+            "safety_notice": "LIVE READ-ONLY MODE" if mode == "LIVE_READ_ONLY" else "HISTORICAL MODE; no control connection is available.",
+        }
+    if mode == "NO_DATA":
+        return {"plant_health": "NO_DATA", "source_mode": mode, "measurements": {}, "twin": None}
     twin = DigitalTwinService()
     nominal_inputs = CSTRInputs()
     state = twin.physics.steady_state(nominal_inputs)
@@ -942,7 +1198,8 @@ def dashboard_payload(context: TenantContext, session: Session) -> dict[str, Any
     )
     return {
         "equipment": {"id": str(equipment.id), "tag": equipment.tag, "name": equipment.name},
-        "plant_health": snapshot.health_status,
+        "source_mode": "SIMULATION",
+        "plant_health": "SIMULATION",
         "measurements": latest,
         "twin": {
             "temperature": snapshot.temperature.model_dump(),

@@ -36,6 +36,7 @@ class ReadingRequest(BaseModel):
 class SimulationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     equipment_id: UUID
+    model_version_id: UUID | None = None
     temperature_c: float = Field(ge=100, le=300)
     pressure_bar: float = Field(ge=0.1, le=100)
     flow_m3_h: float = Field(ge=0, le=10000)
@@ -47,6 +48,7 @@ class SimulationRequest(BaseModel):
 class OptimizationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     equipment_id: UUID
+    model_version_id: UUID | None = None
     temperature_c: float = Field(default=180.0, ge=170, le=190)
     pressure_bar: float = Field(default=10.0, ge=8, le=12)
     flow_m3_h: float = Field(default=72.0, ge=57.6, le=86.4)

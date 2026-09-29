@@ -210,6 +210,9 @@ class SensorReading(Base):
     organization_id: Mapped[UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
     )
+    data_source_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("data_sources.id", ondelete="SET NULL")
+    )
     sensor_id: Mapped[UUID] = mapped_column(
         ForeignKey("sensors.id", ondelete="CASCADE"), nullable=False
     )
@@ -243,6 +246,36 @@ class DataSource(Timestamped, Base):
     endpoint: Mapped[str | None] = mapped_column(String(500))
     read_only: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     configuration: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="DISCONNECTED", nullable=False)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    message_rate_per_minute: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    latency_ms: Mapped[float | None] = mapped_column(Float)
+    error_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    freshness_s: Mapped[float | None] = mapped_column(Float)
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class SourceTagMapping(Timestamped, Base):
+    __tablename__ = "source_tag_mappings"
+    __table_args__ = (
+        UniqueConstraint("data_source_id", "source_key", name="uq_source_tag_key"),
+        Index("ix_source_tag_mappings_organization_id", "organization_id"),
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    data_source_id: Mapped[UUID] = mapped_column(
+        ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False
+    )
+    sensor_id: Mapped[UUID] = mapped_column(ForeignKey("sensors.id", ondelete="CASCADE"), nullable=False)
+    plant_tag_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("plant_tags.id", ondelete="SET NULL")
+    )
+    source_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    canonical_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_unit: Mapped[str] = mapped_column(String(32), nullable=False)
 
 
 class Dataset(Timestamped, Base):
@@ -469,6 +502,18 @@ class TwinState(Timestamped, Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     state: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     health_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_mode: Mapped[str] = mapped_column(String(24), default="SIMULATION", nullable=False)
+    source_ids: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    model_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("model_versions.id", ondelete="SET NULL")
+    )
+    physics_parameter_set_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("physics_parameter_sets.id", ondelete="SET NULL")
+    )
+    data_quality: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    prediction_status: Mapped[str] = mapped_column(String(40), default="PREDICTED", nullable=False)
+    uncertainty: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    health_factors: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
 
 class ModelVersion(Timestamped, Base):
@@ -533,6 +578,15 @@ class Simulation(Timestamped, Base):
     inputs: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     results: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="COMPLETED", nullable=False)
+    user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    model_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("model_versions.id", ondelete="SET NULL")
+    )
+    physics_parameter_set_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("physics_parameter_sets.id", ondelete="SET NULL")
+    )
+    operating_envelope: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    warnings: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
 
 
 class OptimizationRun(Timestamped, Base):
@@ -549,6 +603,17 @@ class OptimizationRun(Timestamped, Base):
     baseline: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     result: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="COMPLETED", nullable=False)
+    user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    model_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("model_versions.id", ondelete="SET NULL")
+    )
+    physics_parameter_set_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("physics_parameter_sets.id", ondelete="SET NULL")
+    )
+    algorithm: Mapped[str] = mapped_column(String(80), default="differential_evolution", nullable=False)
+    bounds: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    constraints: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    uncertainty: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
 
 class Recommendation(Timestamped, Base):
@@ -564,7 +629,60 @@ class Recommendation(Timestamped, Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
     expected_impact: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     confidence: Mapped[str] = mapped_column(String(200), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default="OPEN", nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="GENERATED", nullable=False)
+    simulation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("simulations.id", ondelete="SET NULL")
+    )
+    optimization_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("optimization_runs.id", ondelete="SET NULL")
+    )
+    model_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("model_versions.id", ondelete="SET NULL")
+    )
+    baseline: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    proposed_change: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    energy_impact: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    uncertainty: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    constraint_status: Mapped[str] = mapped_column(String(32), default="UNKNOWN", nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RecommendationReview(Base):
+    __tablename__ = "recommendation_reviews"
+    __table_args__ = (Index("ix_recommendation_reviews_org_timestamp", "organization_id", "created_at"),)
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    recommendation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("recommendations.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    decision: Mapped[str] = mapped_column(String(20), nullable=False)
+    comment: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+class PotentialAnomaly(Base):
+    __tablename__ = "potential_anomalies"
+    __table_args__ = (
+        Index("ix_potential_anomalies_org_timestamp", "organization_id", "timestamp"),
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    equipment_id: Mapped[UUID] = mapped_column(ForeignKey("equipment.id", ondelete="CASCADE"), nullable=False)
+    twin_state_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("twin_states.id", ondelete="SET NULL")
+    )
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    label: Mapped[str] = mapped_column(String(40), default="POTENTIAL ANOMALY", nullable=False)
+    score: Mapped[float] = mapped_column(Float, nullable=False)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    potential_contributing_variables: Mapped[list[str]] = mapped_column(JSON, nullable=False)
 
 
 class Alert(Timestamped, Base):

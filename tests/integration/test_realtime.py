@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from fastapi.responses import StreamingResponse
-
 from apps.api.processtwin_api.main import app
+from fastapi.responses import StreamingResponse
 
 
 def test_dashboard_sse_endpoint_is_registered() -> None:
