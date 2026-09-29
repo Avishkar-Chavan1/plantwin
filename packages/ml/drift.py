@@ -71,7 +71,9 @@ def population_stability_index(reference: Any, current: Any, bins: int = 10) -> 
     actual_total = sum(actual_counts) + alpha * len(actual_counts)
     expected = [(count + alpha) / expected_total for count in expected_counts]
     actual = [(count + alpha) / actual_total for count in actual_counts]
-    return sum((right - left) * log(right / left) for left, right in zip(expected, actual, strict=True))
+    return sum(
+        (right - left) * log(right / left) for left, right in zip(expected, actual, strict=True)
+    )
 
 
 def _jensen_shannon(reference: list[float], current: list[float], bins: int) -> float:
@@ -106,7 +108,9 @@ def compare_drift(
 ) -> DriftResult:
     """Detect covariate/target/residual distribution changes; does not retrain models."""
     if set(reference) != set(current) or not reference:
-        raise ValueError("Reference and current drift windows must have identical non-empty signals")
+        raise ValueError(
+            "Reference and current drift windows must have identical non-empty signals"
+        )
     if not 0 < ks_pvalue_threshold < 1 or psi_threshold <= 0 or js_threshold <= 0 or bins < 2:
         raise ValueError("Drift thresholds and bin count are invalid")
     ks_2samp = import_module("scipy.stats").ks_2samp

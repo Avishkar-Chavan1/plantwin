@@ -4,10 +4,10 @@ Revision ID: 0001_initial_schema
 Revises:
 Create Date: 2026-09-24
 """
-from alembic import op
 
-from apps.api.processtwin_api.database import Base
 import apps.api.processtwin_api.models  # noqa: F401
+from alembic import op
+from apps.api.processtwin_api.database import Base
 
 revision = "0001_initial_schema"
 down_revision = None

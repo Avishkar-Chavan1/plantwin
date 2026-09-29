@@ -38,8 +38,15 @@ SENSOR_DEFINITIONS = [
 
 
 def seed(hours: float) -> None:
-    Base.metadata.create_all(bind=engine)
     settings = get_settings()
+    if settings.is_production:
+        raise RuntimeError("Synthetic demo data must never be seeded in production")
+    if not settings.demo_email or not settings.demo_password:
+        raise RuntimeError(
+            "DEMO_EMAIL and DEMO_PASSWORD are required to seed the local demonstration"
+        )
+    if settings.auto_create_schema:
+        Base.metadata.create_all(bind=engine)
     with SessionLocal() as session:
         existing = session.scalar(
             select(Organization).where(Organization.name == "ProcessTwin Demonstration")

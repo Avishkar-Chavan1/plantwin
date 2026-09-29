@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
+from importlib import import_module
 from typing import Any, Protocol
 
 from connectors.telemetry import SourceHealth, SourceHealthMonitor, TelemetryMessage
@@ -58,9 +59,7 @@ class _SubscriptionHandler:
         try:
             node_id = node.nodeid.to_string()
             source_key, unit = self.node_map[node_id]
-            source_timestamp = getattr(
-                getattr(data, "monitored_item", None), "Value", None
-            )
+            source_timestamp = getattr(getattr(data, "monitored_item", None), "Value", None)
             source_timestamp = getattr(source_timestamp, "SourceTimestamp", None)
             timestamp = source_timestamp or received
             message = TelemetryMessage(
@@ -92,11 +91,15 @@ class OpcUaReadOnlyConnector:
         endpoint: str,
         *,
         stale_after_s: float = 30.0,
+        timeout_s: float = 10.0,
         client_factory: Callable[[str], Any] | None = None,
     ) -> None:
         if not endpoint.startswith(("opc.tcp://", "https://")):
             raise ValueError("OPC-UA endpoint must use opc.tcp:// or https://")
+        if timeout_s <= 0:
+            raise ValueError("OPC-UA timeout must be positive")
         self.endpoint = endpoint
+        self.timeout_s = timeout_s
         self.monitor = SourceHealthMonitor(stale_after_s=stale_after_s)
         self._client_factory = client_factory
         self._client: Any | None = None
@@ -109,12 +112,11 @@ class OpcUaReadOnlyConnector:
     async def connect(self) -> None:
         try:
             if self._client_factory is None:
-                from asyncua import Client
-
-                client = Client(url=self.endpoint)
+                client_factory = import_module("asyncua").Client
+                client = client_factory(url=self.endpoint, timeout=self.timeout_s)
             else:
                 client = self._client_factory(self.endpoint)
-            await client.connect()
+            await asyncio.wait_for(client.connect(), timeout=self.timeout_s)
             self._client = client
             self.monitor.set_connected(True)
         except ImportError as exc:
@@ -146,7 +148,9 @@ class OpcUaReadOnlyConnector:
     async def read_value(self, node_id: str) -> tuple[datetime, float, str]:
         client = await self._require_client()
         try:
-            data_value = await client.get_node(node_id).read_data_value()
+            data_value = await asyncio.wait_for(
+                client.get_node(node_id).read_data_value(), timeout=self.timeout_s
+            )
             source_timestamp = getattr(data_value, "SourceTimestamp", None)
             timestamp = source_timestamp or datetime.now(UTC)
             value = float(data_value.Value.Value)

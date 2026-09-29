@@ -5,11 +5,10 @@ Revises: 0001_initial_schema
 Create Date: 2026-09-29
 """
 
-from alembic import op
-from sqlalchemy import Column, Float, JSON, String, inspect
-
-from apps.api.processtwin_api.database import Base
 import apps.api.processtwin_api.models  # noqa: F401
+from alembic import op
+from apps.api.processtwin_api.database import Base
+from sqlalchemy import JSON, Column, Float, String, inspect
 
 revision = "0002_historical_datasets"
 down_revision = "0001_initial_schema"

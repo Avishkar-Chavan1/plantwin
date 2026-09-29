@@ -107,15 +107,27 @@ def latest_twin(
         "timestamp": state.timestamp,
         "health": {"status": state.health_status, "factors": state.health_factors},
         "data_quality": state.data_quality,
-        "prediction": {"status": state.prediction_status, "values": state.state.get("physics", {}), "uncertainty": state.uncertainty},
+        "prediction": {
+            "status": state.prediction_status,
+            "values": state.state.get("physics", {}),
+            "uncertainty": state.uncertainty,
+        },
         "model_version_id": str(state.model_version_id) if state.model_version_id else None,
-        "physics_parameter_set_id": str(state.physics_parameter_set_id) if state.physics_parameter_set_id else None,
+        "physics_parameter_set_id": str(state.physics_parameter_set_id)
+        if state.physics_parameter_set_id
+        else None,
         "source_ids": state.source_ids,
         "measurements": state.state.get("measurements", {}),
         "physics_residual_temperature_k": state.state.get("physics_residual_temperature_k"),
         "potential_contributing_variables": state.state.get("potential_contributing_variables", []),
         "history": [
-            {"timestamp": item.timestamp, "mode": item.source_mode, "health_status": item.health_status, "prediction_status": item.prediction_status, "state": item.state}
+            {
+                "timestamp": item.timestamp,
+                "mode": item.source_mode,
+                "health_status": item.health_status,
+                "prediction_status": item.prediction_status,
+                "state": item.state,
+            }
             for item in previous
         ],
     }
@@ -188,9 +200,20 @@ def review_recommendation(
     ):
         _raise("RECOMMENDATION_NOT_REVIEWABLE", "Recommendation is final or expired", 409)
     if payload.decision == "REVIEWED" and item.status != "GENERATED":
-        _raise("INVALID_REVIEW_TRANSITION", "Only generated recommendations may be marked reviewed", 409)
-    if payload.decision in {"ACCEPTED", "REJECTED"} and item.status not in {"GENERATED", "REVIEWED"}:
-        _raise("INVALID_REVIEW_TRANSITION", "Recommendation cannot transition from its current status", 409)
+        _raise(
+            "INVALID_REVIEW_TRANSITION",
+            "Only generated recommendations may be marked reviewed",
+            409,
+        )
+    if payload.decision in {"ACCEPTED", "REJECTED"} and item.status not in {
+        "GENERATED",
+        "REVIEWED",
+    }:
+        _raise(
+            "INVALID_REVIEW_TRANSITION",
+            "Recommendation cannot transition from its current status",
+            409,
+        )
     item.status = payload.decision
     review = RecommendationReview(
         organization_id=context.organization_id,
@@ -212,7 +235,13 @@ def review_recommendation(
     session.commit()
     return {
         "recommendation": _recommendation_payload(item, now),
-        "review": {"id": str(review.id), "user_id": str(context.user.id), "timestamp": review.created_at, "decision": review.decision, "comment": review.comment},
+        "review": {
+            "id": str(review.id),
+            "user_id": str(context.user.id),
+            "timestamp": review.created_at,
+            "decision": review.decision,
+            "comment": review.comment,
+        },
     }
 
 
@@ -240,7 +269,13 @@ def recommendation_reviews(
     )
     return {
         "items": [
-            {"id": str(review.id), "user_id": str(review.user_id) if review.user_id else None, "decision": review.decision, "comment": review.comment, "timestamp": review.created_at}
+            {
+                "id": str(review.id),
+                "user_id": str(review.user_id) if review.user_id else None,
+                "decision": review.decision,
+                "comment": review.comment,
+                "timestamp": review.created_at,
+            }
             for review in reviews
         ]
     }

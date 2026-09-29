@@ -18,8 +18,7 @@ from packages.physics import CSTRInputs, CSTRParameters, CSTRPhysicsModel
 
 def observed_series(parameters: CSTRParameters, count: int = 36) -> HistoricalCSTRSeries:
     timestamps = tuple(
-        datetime(2026, 1, 1, tzinfo=UTC) + timedelta(hours=index)
-        for index in range(count)
+        datetime(2026, 1, 1, tzinfo=UTC) + timedelta(hours=index) for index in range(count)
     )
     flow = np.full(count, 0.018)
     feed_temperature = np.full(count, 448.15)
@@ -59,7 +58,16 @@ def observed_series(parameters: CSTRParameters, count: int = 36) -> HistoricalCS
 
 def test_parameter_catalog_has_units_sources_and_bounded_values() -> None:
     catalog = parameter_catalog()
-    assert {"k0_main_s", "Ea_main_j_mol", "deltaH_main_j_mol", "U_w_m2_k", "A_m2", "V_m3", "rho_kg_m3", "Cp_j_kg_k"} <= set(catalog)
+    assert {
+        "k0_main_s",
+        "Ea_main_j_mol",
+        "deltaH_main_j_mol",
+        "U_w_m2_k",
+        "A_m2",
+        "V_m3",
+        "rho_kg_m3",
+        "Cp_j_kg_k",
+    } <= set(catalog)
     for item in catalog.values():
         item.validate()
         assert item.unit
@@ -111,9 +119,7 @@ def test_mass_flow_uses_versioned_density_at_the_cstr_volume_flow_boundary() -> 
     assert volumetric_flow_m3_s(np.array([1.0, 2.0]), "kg/s", 1000.0) == pytest.approx(
         [0.001, 0.002]
     )
-    assert volumetric_flow_m3_s(np.array([0.01]), "m3/s", 1000.0) == pytest.approx(
-        [0.01]
-    )
+    assert volumetric_flow_m3_s(np.array([0.01]), "m3/s", 1000.0) == pytest.approx([0.01])
     with pytest.raises(ValueError, match="density"):
         volumetric_flow_m3_s(np.array([1.0]), "kg/s", 0.0)
     with pytest.raises(ValueError, match="m3/s or kg/s"):

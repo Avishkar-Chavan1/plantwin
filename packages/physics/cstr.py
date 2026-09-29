@@ -7,8 +7,8 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
-from scipy.integrate import solve_ivp
-from scipy.optimize import least_squares
+from scipy.integrate import solve_ivp  # type: ignore[import-untyped]
+from scipy.optimize import least_squares  # type: ignore[import-untyped]
 
 GAS_CONSTANT_J_PER_MOL_K = 8.314462618
 
@@ -48,7 +48,9 @@ class CSTRParameters:
             raise ValueError("CSTR parameters must be finite SI values")
         positive = ("volume_m3", "density_kg_m3", "heat_capacity_j_kg_k", "heat_transfer_area_m2")
         if any(getattr(self, name) <= 0.0 for name in positive):
-            raise ValueError("Reactor volume, density, heat capacity and transfer area must be positive")
+            raise ValueError(
+                "Reactor volume, density, heat capacity and transfer area must be positive"
+            )
         if any(
             value < 0.0
             for value in (
@@ -59,7 +61,9 @@ class CSTRParameters:
                 self.heat_transfer_coefficient_w_m2_k,
             )
         ):
-            raise ValueError("Activation energies, pre-exponential factors and U cannot be negative")
+            raise ValueError(
+                "Activation energies, pre-exponential factors and U cannot be negative"
+            )
 
     @property
     def ua_w_k(self) -> float:
@@ -252,7 +256,9 @@ class CSTRPhysicsModel:
                 or evaluation_times[-1] != time_span_s[1]
                 or np.any(np.diff(evaluation_times) <= 0)
             ):
-                raise ValueError("Sample times must be finite, strictly increasing and span the simulation")
+                raise ValueError(
+                    "Sample times must be finite, strictly increasing and span the simulation"
+                )
 
         solution = solve_ivp(
             lambda time, vector: self.derivatives(time, vector, input_at(time)),

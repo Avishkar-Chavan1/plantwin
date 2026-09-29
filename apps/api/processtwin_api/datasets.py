@@ -66,9 +66,7 @@ def dataset_hierarchy(
     plant_id: UUID, context: TenantDependency, session: SessionDependency
 ) -> dict[str, Any]:
     plant = session.scalar(
-        select(Plant).where(
-            Plant.id == plant_id, Plant.organization_id == context.organization_id
-        )
+        select(Plant).where(Plant.id == plant_id, Plant.organization_id == context.organization_id)
     )
     if plant is None:
         _raise(404, "PLANT_NOT_FOUND", "Plant was not found in this organization")
@@ -138,7 +136,11 @@ def _validate_mapping_scope(
         if equipment is None:
             _raise(404, "EQUIPMENT_NOT_FOUND", "Equipment was not found in this plant")
         if mapping.process_unit_id and equipment.process_unit_id != mapping.process_unit_id:
-            _raise(422, "INVALID_TAG_HIERARCHY", "Equipment does not belong to the selected process unit")
+            _raise(
+                422,
+                "INVALID_TAG_HIERARCHY",
+                "Equipment does not belong to the selected process unit",
+            )
     return mapping.process_unit_id, mapping.equipment_id
 
 
@@ -230,18 +232,22 @@ async def import_dataset(
         _raise(422, "DUPLICATE_SOURCE_TAG", "Each uploaded source tag must be mapped once")
 
     plant = session.scalar(
-        select(Plant).where(
-            Plant.id == plant_id, Plant.organization_id == context.organization_id
-        )
+        select(Plant).where(Plant.id == plant_id, Plant.organization_id == context.organization_id)
     )
     if plant is None:
         _raise(404, "PLANT_NOT_FOUND", "Plant was not found in this organization")
     try:
         rows = read_historical_source(filename, raw)
         if len(rows) > 100_000:
-            _raise(413, "TOO_MANY_ROWS", "Historical imports are limited to 100,000 rows per version")
+            _raise(
+                413, "TOO_MANY_ROWS", "Historical imports are limited to 100,000 rows per version"
+            )
         if len(rows) * len(mapping_request.mappings) > 500_000:
-            _raise(413, "TOO_MANY_MEASUREMENTS", "Historical imports are limited to 500,000 tag observations per version")
+            _raise(
+                413,
+                "TOO_MANY_MEASUREMENTS",
+                "Historical imports are limited to 500,000 tag observations per version",
+            )
         observations = inspect_historical_rows(
             rows,
             [_quality_mapping(mapping) for mapping in mapping_request.mappings],
@@ -317,8 +323,14 @@ async def import_dataset(
             )
             session.add(plant_tag)
             session.flush()
-        elif plant_tag.canonical_name != mapping.canonical_name or plant_tag.normalized_unit != unit:
-            _raise(409, "PLANT_TAG_MAPPING_CONFLICT", f"Plant tag {tag_name} already has a different canonical mapping")
+        elif (
+            plant_tag.canonical_name != mapping.canonical_name or plant_tag.normalized_unit != unit
+        ):
+            _raise(
+                409,
+                "PLANT_TAG_MAPPING_CONFLICT",
+                f"Plant tag {tag_name} already has a different canonical mapping",
+            )
         tag_mapping = session.scalar(
             select(TagMapping).where(
                 TagMapping.dataset_id == dataset.id,
@@ -336,13 +348,20 @@ async def import_dataset(
             session.add(tag_mapping)
             session.flush()
         elif tag_mapping.plant_tag_id != plant_tag.id or tag_mapping.source_unit != mapping.unit:
-            _raise(409, "DATASET_MAPPING_CONFLICT", f"Dataset mapping for {mapping.source_tag} differs from this version")
+            _raise(
+                409,
+                "DATASET_MAPPING_CONFLICT",
+                f"Dataset mapping for {mapping.source_tag} differs from this version",
+            )
         plant_tags[mapping.source_tag] = plant_tag
         mappings_by_source[mapping.source_tag] = tag_mapping
 
-    current_version = session.scalar(
-        select(func.max(DatasetVersion.version)).where(DatasetVersion.dataset_id == dataset.id)
-    ) or 0
+    current_version = (
+        session.scalar(
+            select(func.max(DatasetVersion.version)).where(DatasetVersion.dataset_id == dataset.id)
+        )
+        or 0
+    )
     version = DatasetVersion(
         organization_id=context.organization_id,
         dataset_id=dataset.id,
@@ -446,7 +465,9 @@ def list_dataset_variables(
                 "engineering_unit": mapping.source_unit,
                 "normalized_unit": plant_tag.normalized_unit,
                 "plant_id": str(plant_tag.plant_id),
-                "process_unit_id": str(plant_tag.process_unit_id) if plant_tag.process_unit_id else None,
+                "process_unit_id": str(plant_tag.process_unit_id)
+                if plant_tag.process_unit_id
+                else None,
                 "equipment_id": str(plant_tag.equipment_id) if plant_tag.equipment_id else None,
             }
             for mapping, plant_tag in rows
@@ -506,7 +527,9 @@ def explore_dataset(
         query = query.where(DatasetObservation.timestamp >= start.astimezone(UTC))
     if end:
         query = query.where(DatasetObservation.timestamp <= end.astimezone(UTC))
-    result_rows = session.execute(query.order_by(DatasetObservation.timestamp).limit(limit * 200)).all()
+    result_rows = session.execute(
+        query.order_by(DatasetObservation.timestamp).limit(limit * 200)
+    ).all()
     by_variable: dict[str, dict[str, Any]] = {}
     pairs: dict[tuple[str, str], dict[datetime, float]] = defaultdict(dict)
     for observation, mapping, tag in result_rows:
@@ -538,9 +561,16 @@ def explore_dataset(
         entry["values"].append(observation.normalized_value)
         entry["timestamps"].append(observation.timestamp)
         pairs[(key, mapping.source_tag)][observation.timestamp] = observation.normalized_value
-        if any(reason in {"SUDDEN_SPIKE", "UNREALISTIC_RATE_OF_CHANGE", "SENSOR_DRIFT"} for reason in observation.quality_reasons):
+        if any(
+            reason in {"SUDDEN_SPIKE", "UNREALISTIC_RATE_OF_CHANGE", "SENSOR_DRIFT"}
+            for reason in observation.quality_reasons
+        ):
             entry["outliers"].append(
-                {"timestamp": observation.timestamp, "value": observation.normalized_value, "reasons": observation.quality_reasons}
+                {
+                    "timestamp": observation.timestamp,
+                    "value": observation.normalized_value,
+                    "reasons": observation.quality_reasons,
+                }
             )
 
     variables = []
@@ -562,7 +592,13 @@ def explore_dataset(
                 seconds = (right - left).total_seconds()
                 if seconds > expected * 1.5:
                     gaps.append(
-                        {"variable": key, "start": left, "end": right, "duration_s": seconds, "expected_interval_s": expected}
+                        {
+                            "variable": key,
+                            "start": left,
+                            "end": right,
+                            "duration_s": seconds,
+                            "expected_interval_s": expected,
+                        }
                     )
         count = len(values)
         variables.append(
@@ -582,15 +618,20 @@ def explore_dataset(
                 "max": max(values) if values else None,
                 "mean": mean(values) if values else None,
                 "standard_deviation": pstdev(values) if count > 1 else (0.0 if count else None),
-                "percentiles": {"p05": _percentile(values, 0.05), "p25": _percentile(values, 0.25), "p50": _percentile(values, 0.5), "p75": _percentile(values, 0.75), "p95": _percentile(values, 0.95)},
+                "percentiles": {
+                    "p05": _percentile(values, 0.05),
+                    "p25": _percentile(values, 0.25),
+                    "p50": _percentile(values, 0.5),
+                    "p75": _percentile(values, 0.75),
+                    "p95": _percentile(values, 0.95),
+                },
                 "quality_counts": entry["quality_counts"],
                 "outliers": entry["outliers"][:200],
             }
         )
         trend_indices = sorted(range(len(times)), key=lambda index: times[index])[-trend_limit:]
         trends[key] = [
-            {"timestamp": times[index], "value": values[index]}
-            for index in trend_indices
+            {"timestamp": times[index], "value": values[index]} for index in trend_indices
         ]
 
     correlation: dict[str, dict[str, float | None]] = {}

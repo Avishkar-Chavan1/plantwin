@@ -8,9 +8,11 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from importlib import import_module
 from typing import Any
 
 from apps.api.processtwin_api.contracts import ReadingRequest
+
 from connectors.telemetry import SourceHealth, SourceHealthMonitor, TelemetryMessage
 
 logger = logging.getLogger(__name__)
@@ -121,8 +123,7 @@ class MqttReadOnlySubscriber:
             return
         try:
             if self._factory is None:
-                import paho.mqtt.client as mqtt
-
+                mqtt = import_module("paho.mqtt.client")
                 client = mqtt.Client(
                     callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
                     client_id=self.client_id,
@@ -163,7 +164,9 @@ class MqttReadOnlySubscriber:
             finally:
                 self.monitor.set_connected(False)
 
-    def _on_connect(self, client: Any, _userdata: Any, _flags: Any, reason_code: Any, *_: Any) -> None:
+    def _on_connect(
+        self, client: Any, _userdata: Any, _flags: Any, reason_code: Any, *_: Any
+    ) -> None:
         if int(reason_code) != 0:
             self.monitor.record_error(f"Broker connection refused: {reason_code}")
             return

@@ -4,7 +4,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from math import isfinite
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -69,14 +69,19 @@ class SourceHealthMonitor:
         self.last_error = str(error)[:500]
 
     def _trim(self, now: datetime) -> None:
-        while self._message_times and (now - self._message_times[0]).total_seconds() > self.rate_window_s:
+        while (
+            self._message_times
+            and (now - self._message_times[0]).total_seconds() > self.rate_window_s
+        ):
             self._message_times.popleft()
 
     def snapshot(self, now: datetime | None = None) -> SourceHealth:
         current = (now or datetime.now(UTC)).astimezone(UTC)
         if self.last_message_at is None:
             freshness = None
-            status = "ERROR" if self.error_count else ("CONNECTED" if self.connected else "DISCONNECTED")
+            status = (
+                "ERROR" if self.error_count else ("CONNECTED" if self.connected else "DISCONNECTED")
+            )
         else:
             freshness = max(0.0, (current - self.last_message_at.astimezone(UTC)).total_seconds())
             status = (
@@ -91,7 +96,7 @@ class SourceHealthMonitor:
         self._trim(current)
         rate = len(self._message_times) * 60.0 / self.rate_window_s
         return SourceHealth(
-            status=status,
+            status=cast(Literal["CONNECTED", "DISCONNECTED", "STALE", "ERROR"], status),
             last_message_at=self.last_message_at,
             last_success_at=self.last_success_at,
             message_rate_per_minute=rate,

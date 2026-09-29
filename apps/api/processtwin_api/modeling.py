@@ -47,9 +47,7 @@ router = APIRouter(tags=["calibration-and-models"])
 EngineerContext = Annotated[
     TenantContext, Depends(require_roles(RoleName.OWNER, RoleName.ADMIN, RoleName.ENGINEER))
 ]
-AdminContext = Annotated[
-    TenantContext, Depends(require_roles(RoleName.OWNER, RoleName.ADMIN))
-]
+AdminContext = Annotated[TenantContext, Depends(require_roles(RoleName.OWNER, RoleName.ADMIN))]
 TenantDependency = Annotated[TenantContext, Depends(tenant_context)]
 
 
@@ -156,7 +154,9 @@ def _get_dataset_version(
         )
     )
     if version is None:
-        _raise(404, "DATASET_VERSION_NOT_FOUND", "Dataset version was not found in this organization")
+        _raise(
+            404, "DATASET_VERSION_NOT_FOUND", "Dataset version was not found in this organization"
+        )
     return version
 
 
@@ -390,7 +390,9 @@ def list_model_drift_events(
         "items": [
             {
                 "id": str(item.id),
-                "dataset_version_id": str(item.dataset_version_id) if item.dataset_version_id else None,
+                "dataset_version_id": str(item.dataset_version_id)
+                if item.dataset_version_id
+                else None,
                 "status": item.status,
                 "metrics": item.metrics,
                 "reasons": item.reasons,
@@ -433,7 +435,9 @@ def _envelope_outside(
     return outside
 
 
-def _residual_reference(series: HistoricalCSTRSeries, parameters: CSTRParameters) -> dict[str, list[float]]:
+def _residual_reference(
+    series: HistoricalCSTRSeries, parameters: CSTRParameters
+) -> dict[str, list[float]]:
     prediction = simulate_historical_series(series, parameters)
     train_end = int(len(series.timestamps) * 0.6)
     indices = np.linspace(0, train_end - 1, min(train_end, 1000), dtype=int)
@@ -446,8 +450,10 @@ def _residual_reference(series: HistoricalCSTRSeries, parameters: CSTRParameters
         "feature:feed_concentration_a_mol_m3": series.feed_concentration_a_mol_m3,
         "feature:cooling_temperature_k": series.cooling_temperature_k,
         "target:temperature_k": series.measured_temperature_k,
-        "physics_residual:temperature_k": series.measured_temperature_k - prediction["temperature_k"],
-        "prediction_error:temperature_k": prediction["temperature_k"] - series.measured_temperature_k,
+        "physics_residual:temperature_k": series.measured_temperature_k
+        - prediction["temperature_k"],
+        "prediction_error:temperature_k": prediction["temperature_k"]
+        - series.measured_temperature_k,
     }
     for key, values in targets.items():
         targets[key] = np.asarray(values)[indices].astype(float).tolist()
@@ -483,7 +489,11 @@ def create_parameter_set(
     request: Request,
 ) -> dict[str, Any]:
     if set(payload.parameters) != set(parameter_catalog()):
-        _raise(422, "INCOMPLETE_PARAMETER_SET", "Provide definitions for every CSTR parameter in the catalog")
+        _raise(
+            422,
+            "INCOMPLETE_PARAMETER_SET",
+            "Provide definitions for every CSTR parameter in the catalog",
+        )
     try:
         normalized = {
             name: ParameterField.model_validate(value).model_dump()
@@ -502,7 +512,11 @@ def create_parameter_set(
             PhysicsParameterSet.name == payload.name,
         )
     ):
-        _raise(409, "PARAMETER_SET_EXISTS", "Parameter sets are immutable; choose a new name for a new set")
+        _raise(
+            409,
+            "PARAMETER_SET_EXISTS",
+            "Parameter sets are immutable; choose a new name for a new set",
+        )
     item = PhysicsParameterSet(
         organization_id=context.organization_id,
         name=payload.name.strip(),
@@ -600,26 +614,60 @@ def create_calibration(
             model_type="physics_cstr",
             status="CALIBRATED",
             feature_schema={
-                "inputs": ["reactor.feed_flow", "reactor.feed_temperature", "reactor.feed_concentration", "reactor.cooling_temperature"],
+                "inputs": [
+                    "reactor.feed_flow",
+                    "reactor.feed_temperature",
+                    "reactor.feed_concentration",
+                    "reactor.cooling_temperature",
+                ],
                 "units": "SI",
             },
-            target_schema={"outputs": ["reactor.temperature", "reactor.concentration_a", "reactor.product_b", "reactor.product_c"]},
+            target_schema={
+                "outputs": [
+                    "reactor.temperature",
+                    "reactor.concentration_a",
+                    "reactor.product_b",
+                    "reactor.product_c",
+                ]
+            },
             metrics={
                 "calibration_objective": result.objective,
                 "optimizer_success": result.optimizer_success,
                 "evaluations": {
-                    name: {"metrics": value.metrics, "residual_distribution": value.residual_distribution, "observation_count": value.observation_count}
+                    name: {
+                        "metrics": value.metrics,
+                        "residual_distribution": value.residual_distribution,
+                        "observation_count": value.observation_count,
+                    }
                     for name, value in result.evaluations.items()
                 },
                 "drift_reference": _residual_reference(series, result.parameters),
             },
             dataset_version_id=version.id,
             physics_parameter_set_id=calibrated_set.id,
-            training_period={"start": series.timestamps[0].isoformat(), "end": series.timestamps[result.training_indices[1] - 1].isoformat(), "count": result.training_indices[1]},
-            validation_period={"start": series.timestamps[result.validation_indices[0]].isoformat(), "end": series.timestamps[result.validation_indices[1] - 1].isoformat(), "count": result.validation_indices[1] - result.validation_indices[0]},
-            test_period={"start": series.timestamps[result.test_indices[0]].isoformat(), "end": series.timestamps[-1].isoformat(), "count": result.test_indices[1] - result.test_indices[0]},
-            hyperparameters={"method": payload.method, "fit_bounds": {name: list(value) for name, value in payload.fit_bounds.items()}, "max_evaluations": payload.max_evaluations},
-            operating_envelope={name: bounds.model_dump() for name, bounds in payload.operating_envelope.items()},
+            training_period={
+                "start": series.timestamps[0].isoformat(),
+                "end": series.timestamps[result.training_indices[1] - 1].isoformat(),
+                "count": result.training_indices[1],
+            },
+            validation_period={
+                "start": series.timestamps[result.validation_indices[0]].isoformat(),
+                "end": series.timestamps[result.validation_indices[1] - 1].isoformat(),
+                "count": result.validation_indices[1] - result.validation_indices[0],
+            },
+            test_period={
+                "start": series.timestamps[result.test_indices[0]].isoformat(),
+                "end": series.timestamps[-1].isoformat(),
+                "count": result.test_indices[1] - result.test_indices[0],
+            },
+            hyperparameters={
+                "method": payload.method,
+                "fit_bounds": {name: list(value) for name, value in payload.fit_bounds.items()},
+                "max_evaluations": payload.max_evaluations,
+            },
+            operating_envelope={
+                name: bounds.model_dump() for name, bounds in payload.operating_envelope.items()
+            },
             git_sha=_git_sha(),
             created_by=context.user.id,
         )
@@ -656,7 +704,11 @@ def create_calibration(
             "optimizer_success": result.optimizer_success,
             "optimizer_message": result.optimizer_message,
             "evaluations": {
-                name: {"metrics": value.metrics, "residual_distribution": value.residual_distribution, "observation_count": value.observation_count}
+                name: {
+                    "metrics": value.metrics,
+                    "residual_distribution": value.residual_distribution,
+                    "observation_count": value.observation_count,
+                }
                 for name, value in result.evaluations.items()
             },
         },
@@ -672,13 +724,21 @@ def create_calibration(
         f"calibration:{run.id}",
         user_id=context.user.id,
         ip_address=request.client.host if request.client else None,
-        metadata={"dataset_version_id": str(version.id), "method": payload.method, "status": run.status},
+        metadata={
+            "dataset_version_id": str(version.id),
+            "method": payload.method,
+            "status": run.status,
+        },
     )
     session.commit()
     if not result.optimizer_success:
         _raise(422, "CALIBRATION_DID_NOT_CONVERGE", result.optimizer_message)
     if calibrated_set is None:
-        _raise(500, "CALIBRATION_RESULT_INCOMPLETE", "Successful calibration did not produce a parameter-set version")
+        _raise(
+            500,
+            "CALIBRATION_RESULT_INCOMPLETE",
+            "Successful calibration did not produce a parameter-set version",
+        )
     return {
         "calibration_run_id": str(run.id),
         "dataset_version_id": str(version.id),
@@ -686,11 +746,23 @@ def create_calibration(
         "calibrated_parameter_set": _version_payload(calibrated_set),
         "model_version_id": str(model_version.id) if model_version else None,
         "status": "CALIBRATED",
-        "optimizer": {"method": result.optimizer, "success": result.optimizer_success, "objective": result.objective, "message": result.optimizer_message},
+        "optimizer": {
+            "method": result.optimizer,
+            "success": result.optimizer_success,
+            "objective": result.objective,
+            "message": result.optimizer_message,
+        },
         "parameters": result.calibrated_parameters,
         "bounds": {name: list(bound) for name, bound in result.bounds.items()},
         "evaluations": {
-            name: {"metrics": value.metrics, "residual_distribution": value.residual_distribution, "measured": value.measured, "physics_prediction": value.predicted, "residual": value.residuals, "observation_count": value.observation_count}
+            name: {
+                "metrics": value.metrics,
+                "residual_distribution": value.residual_distribution,
+                "measured": value.measured,
+                "physics_prediction": value.predicted,
+                "residual": value.residuals,
+                "observation_count": value.observation_count,
+            }
             for name, value in result.evaluations.items()
         },
         "note": "CALIBRATED is not EVALUATED or VALIDATED. Calibration fit uses the chronological first 60%; later windows are reported separately.",
@@ -726,15 +798,25 @@ def train_hybrid_model(
         _raise(422, "HYBRID_TRAINING_NOT_POSSIBLE", str(exc))
     measured_product_b = series.measured_concentration_b_mol_m3
     if measured_product_b is None:
-        _raise(422, "HYBRID_TARGET_MISSING", "Map reactor.product_b (mol/m³) to compare measured yield against the CSTR physics prediction")
+        _raise(
+            422,
+            "HYBRID_TARGET_MISSING",
+            "Map reactor.product_b (mol/m³) to compare measured yield against the CSTR physics prediction",
+        )
     if np.any(series.feed_concentration_a_mol_m3 <= 0):
-        _raise(422, "HYBRID_TARGET_INVALID", "Feed concentration must be positive to calculate measured yield")
+        _raise(
+            422,
+            "HYBRID_TARGET_INVALID",
+            "Feed concentration must be positive to calculate measured yield",
+        )
     targets = measured_product_b / series.feed_concentration_a_mol_m3
     baseline = simulated["concentration_b_mol_m3"] / series.feed_concentration_a_mol_m3
     features: Any = np.column_stack(
         (
             series.feed_temperature_k,
-            series.pressure_pa if series.pressure_pa is not None else np.full(len(targets), 101_325.0),
+            series.pressure_pa
+            if series.pressure_pa is not None
+            else np.full(len(targets), 101_325.0),
             series.feed_flow_m3_s,
             series.feed_concentration_a_mol_m3,
             series.cooling_temperature_k,
@@ -746,7 +828,14 @@ def train_hybrid_model(
             ),
         )
     )
-    feature_names = ("feed_temperature_k", "pressure_pa", "feed_flow_m3_s", "feed_concentration_a_mol_m3", "cooling_temperature_k", "residence_time_s")
+    feature_names = (
+        "feed_temperature_k",
+        "pressure_pa",
+        "feed_flow_m3_s",
+        "feed_concentration_a_mol_m3",
+        "cooling_temperature_k",
+        "residence_time_s",
+    )
     try:
         result = train_residual_model(features, targets, baseline, feature_names)
     except ValueError as exc:
@@ -760,14 +849,14 @@ def train_hybrid_model(
     _, training_hybrid, _ = result.model.predict(features[train_indices], baseline[train_indices])
     drift_reference["target:yield_fraction"] = targets[train_indices].astype(float).tolist()
     drift_reference["physics_residual:yield_fraction"] = (
-        targets[train_indices] - baseline[train_indices]
-    ).astype(float).tolist()
+        (targets[train_indices] - baseline[train_indices]).astype(float).tolist()
+    )
     drift_reference["hybrid_residual:yield_fraction"] = (
-        targets[train_indices] - training_hybrid
-    ).astype(float).tolist()
+        (targets[train_indices] - training_hybrid).astype(float).tolist()
+    )
     drift_reference["prediction_error:yield_fraction"] = (
-        training_hybrid - targets[train_indices]
-    ).astype(float).tolist()
+        (training_hybrid - targets[train_indices]).astype(float).tolist()
+    )
     model_version = ModelVersion(
         organization_id=context.organization_id,
         name="CSTR physics residual hybrid",
@@ -775,21 +864,48 @@ def train_hybrid_model(
         model_type="physics_plus_ml_residual",
         status="VALIDATION",
         feature_schema={"names": feature_names, "units": ["K", "Pa", "m3/s", "mol/m3", "K", "s"]},
-        target_schema={"name": "yield_fraction", "unit": "1", "source": "measured_product_b/feed_concentration"},
+        target_schema={
+            "name": "yield_fraction",
+            "unit": "1",
+            "source": "measured_product_b/feed_concentration",
+        },
         metrics={
-            "training_comparisons": {name: value.as_dict() for name, value in result.training_comparisons.items()},
-            "validation_comparisons": {name: value.as_dict() for name, value in result.validation_comparisons.items()},
-            "test_comparisons": {name: value.as_dict() for name, value in result.test_comparisons.items()},
+            "training_comparisons": {
+                name: value.as_dict() for name, value in result.training_comparisons.items()
+            },
+            "validation_comparisons": {
+                name: value.as_dict() for name, value in result.validation_comparisons.items()
+            },
+            "test_comparisons": {
+                name: value.as_dict() for name, value in result.test_comparisons.items()
+            },
             "residual_standard_deviation": result.model.residual_standard_deviation,
             "drift_reference": drift_reference,
         },
         dataset_version_id=version.id,
         physics_parameter_set_id=parameter_set.id,
-        training_period={"start": series.timestamps[0].isoformat(), "end": series.timestamps[training - 1].isoformat(), "count": training},
-        validation_period={"start": series.timestamps[training].isoformat(), "end": series.timestamps[validation - 1].isoformat(), "count": validation - training},
-        test_period={"start": series.timestamps[validation].isoformat(), "end": series.timestamps[-1].isoformat(), "count": len(series.timestamps) - validation},
-        hyperparameters={"algorithm": result.model.algorithm, "ordered_split": {"train": 0.6, "validation": 0.2, "test": 0.2}},
-        operating_envelope={name: item.model_dump() for name, item in payload.operating_envelope.items()},
+        training_period={
+            "start": series.timestamps[0].isoformat(),
+            "end": series.timestamps[training - 1].isoformat(),
+            "count": training,
+        },
+        validation_period={
+            "start": series.timestamps[training].isoformat(),
+            "end": series.timestamps[validation - 1].isoformat(),
+            "count": validation - training,
+        },
+        test_period={
+            "start": series.timestamps[validation].isoformat(),
+            "end": series.timestamps[-1].isoformat(),
+            "count": len(series.timestamps) - validation,
+        },
+        hyperparameters={
+            "algorithm": result.model.algorithm,
+            "ordered_split": {"train": 0.6, "validation": 0.2, "test": 0.2},
+        },
+        operating_envelope={
+            name: item.model_dump() for name, item in payload.operating_envelope.items()
+        },
         git_sha=_git_sha(),
         created_by=context.user.id,
     )
@@ -854,10 +970,16 @@ def evaluate_model(
     if model is None:
         _raise(404, "MODEL_NOT_FOUND", "Model version was not found")
     if model.status in {"PRODUCTION", "RETIRED"}:
-        _raise(409, "MODEL_VERSION_IMMUTABLE", "Production and retired model versions are immutable")
+        _raise(
+            409, "MODEL_VERSION_IMMUTABLE", "Production and retired model versions are immutable"
+        )
     version = _get_dataset_version(session, payload.dataset_version_id, context.organization_id)
     if model.dataset_version_id == version.id:
-        _raise(422, "INDEPENDENT_DATASET_REQUIRED", "Evaluation requires a dataset version independent of the model's training dataset")
+        _raise(
+            422,
+            "INDEPENDENT_DATASET_REQUIRED",
+            "Evaluation requires a dataset version independent of the model's training dataset",
+        )
     if model.dataset_version_id is not None:
         training_version = session.scalar(
             select(DatasetVersion).where(
@@ -865,19 +987,32 @@ def evaluate_model(
                 DatasetVersion.organization_id == context.organization_id,
             )
         )
-        if training_version is not None and training_version.checksum_sha256 == version.checksum_sha256:
-            _raise(422, "INDEPENDENT_DATASET_REQUIRED", "Evaluation data has the same content checksum as the model's training dataset")
-    parameter_set = session.get(PhysicsParameterSet, model.physics_parameter_set_id) if model.physics_parameter_set_id else None
+        if (
+            training_version is not None
+            and training_version.checksum_sha256 == version.checksum_sha256
+        ):
+            _raise(
+                422,
+                "INDEPENDENT_DATASET_REQUIRED",
+                "Evaluation data has the same content checksum as the model's training dataset",
+            )
+    parameter_set = (
+        session.get(PhysicsParameterSet, model.physics_parameter_set_id)
+        if model.physics_parameter_set_id
+        else None
+    )
     if parameter_set is None or parameter_set.organization_id != context.organization_id:
-        _raise(422, "PHYSICS_PARAMETERS_UNAVAILABLE", "Model has no tenant-scoped physics parameter set")
+        _raise(
+            422,
+            "PHYSICS_PARAMETERS_UNAVAILABLE",
+            "Model has no tenant-scoped physics parameter set",
+        )
     try:
         parameters = parameter_set_from_values(parameter_set.parameters)
         series = _historical_series(
             session, version, context.organization_id, parameters.density_kg_m3
         )
-        outside = _envelope_outside(
-            series, model.operating_envelope, parameters.density_kg_m3
-        )
+        outside = _envelope_outside(series, model.operating_envelope, parameters.density_kg_m3)
     except (CalibrationSeriesError, ValueError) as exc:
         _raise(422, "EVALUATION_NOT_POSSIBLE", str(exc))
     if outside:
@@ -917,12 +1052,18 @@ def evaluate_model(
             simulated = simulate_historical_series(series, parameters)
             targets = series.measured_concentration_b_mol_m3
             if targets is None:
-                _raise(422, "HYBRID_TARGET_MISSING", "Evaluation data must include mapped reactor.product_b")
+                _raise(
+                    422,
+                    "HYBRID_TARGET_MISSING",
+                    "Evaluation data must include mapped reactor.product_b",
+                )
             physics = simulated["concentration_b_mol_m3"] / series.feed_concentration_a_mol_m3
             features = np.column_stack(
                 (
                     series.feed_temperature_k,
-                    series.pressure_pa if series.pressure_pa is not None else np.full(len(targets), 101_325.0),
+                    series.pressure_pa
+                    if series.pressure_pa is not None
+                    else np.full(len(targets), 101_325.0),
                     series.feed_flow_m3_s,
                     series.feed_concentration_a_mol_m3,
                     series.cooling_temperature_k,
@@ -936,11 +1077,28 @@ def evaluate_model(
             hybrid_metrics = score(targets / series.feed_concentration_a_mol_m3, hybrid).as_dict()
             target_values = (targets / series.feed_concentration_a_mol_m3).tolist()
             measured = {"yield_fraction": target_values}
-            predicted = {"physics_only": physics.tolist(), "physics_plus_ml_residual": hybrid.tolist()}
-            residuals = {"physics_only": (physics - np.asarray(target_values)).tolist(), "physics_plus_ml_residual": (hybrid - np.asarray(target_values)).tolist()}
-            comparisons = [{"name": "physics_only", "metrics": physics_metrics}, {"name": "physics_plus_ml_residual", "metrics": hybrid_metrics}]
-            distributions = {"physics_only": _residual_distribution(np.asarray(residuals["physics_only"])), "physics_plus_ml_residual": _residual_distribution(np.asarray(residuals["physics_plus_ml_residual"]))}
-            result_metrics = {"physics_only": physics_metrics, "physics_plus_ml_residual": hybrid_metrics}
+            predicted = {
+                "physics_only": physics.tolist(),
+                "physics_plus_ml_residual": hybrid.tolist(),
+            }
+            residuals = {
+                "physics_only": (physics - np.asarray(target_values)).tolist(),
+                "physics_plus_ml_residual": (hybrid - np.asarray(target_values)).tolist(),
+            }
+            comparisons = [
+                {"name": "physics_only", "metrics": physics_metrics},
+                {"name": "physics_plus_ml_residual", "metrics": hybrid_metrics},
+            ]
+            distributions = {
+                "physics_only": _residual_distribution(np.asarray(residuals["physics_only"])),
+                "physics_plus_ml_residual": _residual_distribution(
+                    np.asarray(residuals["physics_plus_ml_residual"])
+                ),
+            }
+            result_metrics = {
+                "physics_only": physics_metrics,
+                "physics_plus_ml_residual": hybrid_metrics,
+            }
         else:
             _raise(422, "MODEL_ARTIFACT_UNAVAILABLE", "Model artifact is unavailable")
     except (ValueError, RuntimeError, OSError) as exc:
@@ -975,7 +1133,10 @@ def evaluate_model(
         f"model:{model.id}:evaluation:{evaluation.id}",
         user_id=context.user.id,
         ip_address=request.client.host if request.client else None,
-        metadata={"dataset_version_id": str(version.id), "observation_count": evaluation.observation_count},
+        metadata={
+            "dataset_version_id": str(version.id),
+            "observation_count": evaluation.observation_count,
+        },
     )
     session.commit()
     return {
@@ -1020,7 +1181,9 @@ def validate_model(
     if model is None:
         _raise(404, "MODEL_NOT_FOUND", "Model version was not found")
     if model.status in {"PRODUCTION", "RETIRED"}:
-        _raise(409, "MODEL_VERSION_IMMUTABLE", "Production and retired model versions are immutable")
+        _raise(
+            409, "MODEL_VERSION_IMMUTABLE", "Production and retired model versions are immutable"
+        )
     evaluation = session.scalar(
         select(ModelEvaluation).where(
             ModelEvaluation.id == payload.evaluation_id,
@@ -1030,7 +1193,11 @@ def validate_model(
         )
     )
     if evaluation is None or evaluation.observation_count < 10:
-        _raise(422, "INDEPENDENT_EVALUATION_REQUIRED", "Validation requires at least 10 measured observations from a successful independent evaluation")
+        _raise(
+            422,
+            "INDEPENDENT_EVALUATION_REQUIRED",
+            "Validation requires at least 10 measured observations from a successful independent evaluation",
+        )
     failed: list[str] = []
     for signal, limits in payload.acceptance_limits.items():
         actual = evaluation.metrics.get(signal)
@@ -1051,9 +1218,15 @@ def validate_model(
             elif maximum is not None and float(value) > maximum:
                 failed.append(f"{signal}.{metric_name}:above_maximum")
     if failed:
-        _raise(422, "VALIDATION_CRITERIA_NOT_MET", f"Acceptance criteria failed: {', '.join(failed)}")
+        _raise(
+            422, "VALIDATION_CRITERIA_NOT_MET", f"Acceptance criteria failed: {', '.join(failed)}"
+        )
     if not model.operating_envelope:
-        _raise(422, "VALIDATION_ENVELOPE_REQUIRED", "Configure and review the model operating envelope before validation")
+        _raise(
+            422,
+            "VALIDATION_ENVELOPE_REQUIRED",
+            "Configure and review the model operating envelope before validation",
+        )
     model.status = "VALIDATED"
     model.metrics = {
         **model.metrics,
@@ -1075,7 +1248,12 @@ def validate_model(
         metadata={"evaluation_id": str(evaluation.id)},
     )
     session.commit()
-    return {"model_version_id": str(model.id), "status": model.status, "evaluation_id": str(evaluation.id), "operating_envelope": model.operating_envelope}
+    return {
+        "model_version_id": str(model.id),
+        "status": model.status,
+        "evaluation_id": str(evaluation.id),
+        "operating_envelope": model.operating_envelope,
+    }
 
 
 @router.post("/api/v1/models/{model_id}/drift")
@@ -1096,12 +1274,22 @@ def monitor_model_drift(
         _raise(404, "MODEL_NOT_FOUND", "Model version was not found")
     reference = model.metrics.get("drift_reference")
     if not isinstance(reference, dict) or not reference:
-        _raise(422, "DRIFT_REFERENCE_UNAVAILABLE", "Model has no recorded training reference distributions")
+        _raise(
+            422,
+            "DRIFT_REFERENCE_UNAVAILABLE",
+            "Model has no recorded training reference distributions",
+        )
     version = _get_dataset_version(session, payload.dataset_version_id, context.organization_id)
     try:
-        parameter_set = session.get(PhysicsParameterSet, model.physics_parameter_set_id) if model.physics_parameter_set_id else None
+        parameter_set = (
+            session.get(PhysicsParameterSet, model.physics_parameter_set_id)
+            if model.physics_parameter_set_id
+            else None
+        )
         if parameter_set is None or parameter_set.organization_id != context.organization_id:
-            _raise(422, "PHYSICS_PARAMETERS_UNAVAILABLE", "Model physics parameter set is unavailable")
+            _raise(
+                422, "PHYSICS_PARAMETERS_UNAVAILABLE", "Model physics parameter set is unavailable"
+            )
         parameters = parameter_set_from_values(parameter_set.parameters)
         series = _historical_series(
             session, version, context.organization_id, parameters.density_kg_m3
@@ -1109,13 +1297,17 @@ def monitor_model_drift(
         predicted = simulate_historical_series(series, parameters)
         current = {
             "feature:feed_temperature_k": series.feed_temperature_k,
-            "feature:pressure_pa": series.pressure_pa if series.pressure_pa is not None else np.full(len(series.timestamps), 101_325.0),
+            "feature:pressure_pa": series.pressure_pa
+            if series.pressure_pa is not None
+            else np.full(len(series.timestamps), 101_325.0),
             "feature:feed_flow_m3_s": series.feed_flow_m3_s,
             "feature:feed_concentration_a_mol_m3": series.feed_concentration_a_mol_m3,
             "feature:cooling_temperature_k": series.cooling_temperature_k,
             "target:temperature_k": series.measured_temperature_k,
-            "physics_residual:temperature_k": series.measured_temperature_k - predicted["temperature_k"],
-            "prediction_error:temperature_k": predicted["temperature_k"] - series.measured_temperature_k,
+            "physics_residual:temperature_k": series.measured_temperature_k
+            - predicted["temperature_k"],
+            "prediction_error:temperature_k": predicted["temperature_k"]
+            - series.measured_temperature_k,
         }
         if model.model_type != "physics_cstr" and model.artifact_path:
             from packages.ml.pipeline import HybridResidualModel
@@ -1123,8 +1315,19 @@ def monitor_model_drift(
             artifact = HybridResidualModel.load(Path(model.artifact_path))
             actual = series.measured_concentration_b_mol_m3
             if actual is not None:
-                physics_yield = predicted["concentration_b_mol_m3"] / series.feed_concentration_a_mol_m3
-                features = np.column_stack((series.feed_temperature_k, current["feature:pressure_pa"], series.feed_flow_m3_s, series.feed_concentration_a_mol_m3, series.cooling_temperature_k, parameters.volume_m3 / np.maximum(series.feed_flow_m3_s, 1e-12)))
+                physics_yield = (
+                    predicted["concentration_b_mol_m3"] / series.feed_concentration_a_mol_m3
+                )
+                features = np.column_stack(
+                    (
+                        series.feed_temperature_k,
+                        current["feature:pressure_pa"],
+                        series.feed_flow_m3_s,
+                        series.feed_concentration_a_mol_m3,
+                        series.cooling_temperature_k,
+                        parameters.volume_m3 / np.maximum(series.feed_flow_m3_s, 1e-12),
+                    )
+                )
                 _, hybrid, _ = artifact.predict(features, physics_yield)
                 actual_yield = actual / series.feed_concentration_a_mol_m3
                 current["target:yield_fraction"] = actual_yield
@@ -1134,7 +1337,11 @@ def monitor_model_drift(
                 current["prediction_error:yield_fraction"] = hybrid - actual_yield
         expected = set(reference) & set(current)
         if not expected:
-            _raise(422, "DRIFT_SIGNALS_UNAVAILABLE", "No configured reference signals are available from this dataset")
+            _raise(
+                422,
+                "DRIFT_SIGNALS_UNAVAILABLE",
+                "No configured reference signals are available from this dataset",
+            )
         outcome = compare_drift(
             {name: np.asarray(reference[name], dtype=float) for name in expected},
             {name: np.asarray(current[name], dtype=float) for name in expected},
@@ -1163,4 +1370,12 @@ def monitor_model_drift(
         metadata={"status": outcome.status, "dataset_version_id": str(version.id)},
     )
     session.commit()
-    return {"event_id": str(event.id), "model_version_id": str(model.id), "dataset_version_id": str(version.id), "status": outcome.status, "metrics": outcome.metrics, "reasons": outcome.reasons, "action": "No automatic retraining or production model changes were performed."}
+    return {
+        "event_id": str(event.id),
+        "model_version_id": str(model.id),
+        "dataset_version_id": str(version.id),
+        "status": outcome.status,
+        "metrics": outcome.metrics,
+        "reasons": outcome.reasons,
+        "action": "No automatic retraining or production model changes were performed.",
+    }

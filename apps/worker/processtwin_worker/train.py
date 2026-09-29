@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
+from typing import cast
 from uuid import UUID
 
 import numpy as np
@@ -10,6 +12,7 @@ from packages.physics import CSTRPhysicsModel
 from packages.units import to_si
 from sqlalchemy import select
 
+from apps.api.processtwin_api.config import get_settings
 from apps.api.processtwin_api.database import Base, SessionLocal, engine
 from apps.api.processtwin_api.models import (
     ModelVersion,
@@ -49,7 +52,8 @@ def physics_yield(temperature_c: float, flow_m3_h: float, feed_concentration: fl
 
 
 def train_all(organization_id: UUID | None = None) -> int:
-    Base.metadata.create_all(bind=engine)
+    if get_settings().auto_create_schema:
+        Base.metadata.create_all(bind=engine)
     trained = 0
     with SessionLocal() as session:
         organizations = (
@@ -67,7 +71,7 @@ def train_all(organization_id: UUID | None = None) -> int:
             needed = set(FEATURE_TAGS) | {"YIELD"}
             if not needed.issubset(sensors):
                 continue
-            by_time: dict[object, dict[str, float]] = defaultdict(dict)
+            by_time: dict[datetime, dict[str, float]] = defaultdict(dict)
             rows = session.execute(
                 select(SensorReading.timestamp, Sensor.tag, SensorReading.value)
                 .join(Sensor, Sensor.id == SensorReading.sensor_id)
@@ -112,9 +116,15 @@ def train_all(organization_id: UUID | None = None) -> int:
             version = f"yield-residual-{trained + 1}"
             path = Path("data/models") / f"{organization.id}-{version}.joblib"
             result.model.save(path)
-            feature_importance = getattr(
-                result.model.residual_model, "feature_importances_", np.zeros(len(FEATURE_NAMES))
+            raw_feature_importance = cast(
+                object,
+                getattr(
+                    result.model.residual_model,
+                    "feature_importances_",
+                    np.zeros(len(FEATURE_NAMES)),
+                ),
             )
+            feature_importance = np.asarray(raw_feature_importance, dtype=float).reshape(-1)
             record = ModelVersion(
                 organization_id=organization.id,
                 name="CSTR Yield Hybrid",

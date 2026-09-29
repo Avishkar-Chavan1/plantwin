@@ -26,3 +26,11 @@ def test_calibration_registry_migration_follows_historical_datasets() -> None:
     revision = scripts.get_revision("0003_calibration_registry")
     assert revision is not None
     assert revision.down_revision == "0002_historical_datasets"
+
+
+def test_security_migration_follows_live_readonly_workflow() -> None:
+    config = Config("alembic.ini")
+    scripts = ScriptDirectory.from_config(config)
+    revision = scripts.get_revision("0006_security_rls_refresh_tokens")
+    assert revision is not None
+    assert revision.down_revision == "0005_live_readonly_workflow"

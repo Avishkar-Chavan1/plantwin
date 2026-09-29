@@ -33,7 +33,13 @@ def upgrade() -> None:
     }
     for name, column_type in additions.items():
         if name not in columns:
-            if name in {"training_period", "validation_period", "test_period", "hyperparameters", "operating_envelope"}:
+            if name in {
+                "training_period",
+                "validation_period",
+                "test_period",
+                "hyperparameters",
+                "operating_envelope",
+            }:
                 op.add_column(
                     "model_versions",
                     Column(name, column_type, nullable=False, server_default="{}"),
@@ -58,7 +64,12 @@ def upgrade() -> None:
 def downgrade() -> None:
     bind = op.get_bind()
     tables = set(inspect(bind).get_table_names())
-    for table in ("model_drift_events", "model_evaluations", "calibration_runs", "physics_parameter_sets"):
+    for table in (
+        "model_drift_events",
+        "model_evaluations",
+        "calibration_runs",
+        "physics_parameter_sets",
+    ):
         if table in tables:
             op.drop_table(table)
     columns = {column["name"] for column in inspect(bind).get_columns("model_versions")}

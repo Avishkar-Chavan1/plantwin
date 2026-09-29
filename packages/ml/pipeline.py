@@ -5,27 +5,33 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Any, Protocol, TypeAlias, cast
 
-import joblib
+import joblib  # type: ignore[import-untyped]
 import numpy as np
 
+FloatArray: TypeAlias = np.ndarray[Any, np.dtype[np.float64]]
+
 try:  # A fresh declared environment uses scikit-learn; constrained local environments retain a real fallback.
-    from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
+    from sklearn.ensemble import (  # type: ignore[import-untyped]
+        GradientBoostingRegressor,
+        RandomForestRegressor,
+    )
 
     SKLEARN_AVAILABLE = True
 except (
     ImportError,
     ValueError,
 ):  # pragma: no cover - exercised only with incompatible external binary wheels
-    GradientBoostingRegressor = None  # type: ignore[assignment,misc]
-    RandomForestRegressor = None  # type: ignore[assignment,misc]
+    GradientBoostingRegressor = None
+    RandomForestRegressor = None
     SKLEARN_AVAILABLE = False
 
 
 class ResidualEstimator(Protocol):
-    def fit(self, features: np.ndarray, target: np.ndarray) -> ResidualEstimator: ...
-    def predict(self, features: np.ndarray) -> np.ndarray: ...
+    def fit(self, features: FloatArray, target: FloatArray) -> ResidualEstimator: ...
+
+    def predict(self, features: FloatArray) -> FloatArray: ...
 
 
 @dataclass
@@ -33,29 +39,31 @@ class RidgeResidualRegressor:
     """Regularized linear residual learner and extrapolation-aware validation candidate."""
 
     regularization: float = 1e-6
-    coefficients: np.ndarray | None = None
+    coefficients: FloatArray | None = None
     intercept: float = 0.0
 
-    def fit(self, features: np.ndarray, target: np.ndarray) -> RidgeResidualRegressor:
-        design = np.column_stack((np.ones(len(features)), features))
+    def fit(self, features: FloatArray, target: FloatArray) -> RidgeResidualRegressor:
+        design = cast(FloatArray, np.column_stack((np.ones(len(features)), features)))
         penalty = np.eye(design.shape[1]) * self.regularization
         penalty[0, 0] = 0.0
-        solution = np.linalg.solve(design.T @ design + penalty, design.T @ target)
+        solution = cast(FloatArray, np.linalg.solve(design.T @ design + penalty, design.T @ target))
         self.intercept = float(solution[0])
         self.coefficients = solution[1:]
         return self
 
-    def predict(self, features: np.ndarray) -> np.ndarray:
+    def predict(self, features: FloatArray) -> FloatArray:
         if self.coefficients is None:
             raise ValueError("Model has not been trained")
-        return self.intercept + np.asarray(features, dtype=float) @ self.coefficients
+        return cast(
+            FloatArray, self.intercept + np.asarray(features, dtype=float) @ self.coefficients
+        )
 
     @property
-    def feature_importances_(self) -> np.ndarray:
+    def feature_importances_(self) -> FloatArray:
         if self.coefficients is None:
-            return np.array([])
+            return cast(FloatArray, np.array([]))
         values = np.abs(self.coefficients)
-        return values / values.sum() if values.sum() else values
+        return cast(FloatArray, values / values.sum() if values.sum() else values)
 
 
 @dataclass(frozen=True)
@@ -108,9 +116,9 @@ class ModelMetrics:
         }
 
 
-def metrics(actual: np.ndarray, predicted: np.ndarray) -> ModelMetrics:
-    actual = np.asarray(actual, dtype=float)
-    predicted = np.asarray(predicted, dtype=float)
+def metrics(actual: FloatArray, predicted: FloatArray) -> ModelMetrics:
+    actual = cast(FloatArray, np.asarray(actual, dtype=float))
+    predicted = cast(FloatArray, np.asarray(predicted, dtype=float))
     nonzero = np.abs(actual) > 1e-6
     mape = (
         float(np.mean(np.abs((actual[nonzero] - predicted[nonzero]) / actual[nonzero])) * 100)
@@ -139,16 +147,20 @@ class HybridResidualModel:
     algorithm: str
 
     def predict(
-        self, features: np.ndarray, physics_prediction: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        matrix = np.asarray(features, dtype=float)
-        baseline = np.asarray(physics_prediction, dtype=float)
+        self, features: FloatArray, physics_prediction: FloatArray
+    ) -> tuple[FloatArray, FloatArray, FloatArray]:
+        matrix = cast(FloatArray, np.asarray(features, dtype=float))
+        baseline = cast(FloatArray, np.asarray(physics_prediction, dtype=float))
         if matrix.ndim != 2 or matrix.shape[1] != len(self.feature_names):
             raise ValueError("Feature matrix does not match saved feature schema")
         correction = self.residual_model.predict(matrix)
         hybrid = baseline + correction
         interval = 1.96 * self.residual_standard_deviation
-        return baseline, hybrid, np.full_like(hybrid, interval, dtype=float)
+        return (
+            baseline,
+            cast(FloatArray, hybrid),
+            cast(FloatArray, np.full_like(hybrid, interval, dtype=float)),
+        )
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -156,7 +168,7 @@ class HybridResidualModel:
 
     @classmethod
     def load(cls, path: Path) -> HybridResidualModel:
-        loaded = joblib.load(path)
+        loaded: object = joblib.load(path)
         if not isinstance(loaded, cls):
             raise ValueError("Artifact is not a ProcessTwin hybrid residual model")
         return loaded
@@ -182,9 +194,7 @@ def _new_estimator(algorithm: str) -> ResidualEstimator:
         assert RandomForestRegressor is not None
         return cast(
             ResidualEstimator,
-            RandomForestRegressor(
-                n_estimators=250, min_samples_leaf=3, random_state=42, n_jobs=1
-            ),
+            RandomForestRegressor(n_estimators=250, min_samples_leaf=3, random_state=42, n_jobs=1),
         )
     if SKLEARN_AVAILABLE:
         assert GradientBoostingRegressor is not None
@@ -200,9 +210,9 @@ def _new_estimator(algorithm: str) -> ResidualEstimator:
 def _select_residual_estimator(
     *,
     algorithm: str,
-    features: np.ndarray,
-    actual: np.ndarray,
-    baseline: np.ndarray,
+    features: FloatArray,
+    actual: FloatArray,
+    baseline: FloatArray,
     train: slice,
     validation: slice,
 ) -> tuple[str, ResidualEstimator]:
@@ -226,16 +236,16 @@ def _select_residual_estimator(
 
 
 def train_residual_model(
-    features: np.ndarray,
-    actual_target: np.ndarray,
-    physics_prediction: np.ndarray,
+    features: FloatArray,
+    actual_target: FloatArray,
+    physics_prediction: FloatArray,
     feature_names: Sequence[str],
     algorithm: str = "gradient_boosting",
 ) -> TrainingResult:
     """Fit residual only on historical train partition, then evaluate future windows."""
-    matrix = np.asarray(features, dtype=float)
-    actual = np.asarray(actual_target, dtype=float)
-    baseline = np.asarray(physics_prediction, dtype=float)
+    matrix = cast(FloatArray, np.asarray(features, dtype=float))
+    actual = cast(FloatArray, np.asarray(actual_target, dtype=float))
+    baseline = cast(FloatArray, np.asarray(physics_prediction, dtype=float))
     if matrix.ndim != 2 or len(actual) != len(matrix) or len(baseline) != len(matrix):
         raise ValueError(
             "Features, target and physics baseline must have matching observation count"

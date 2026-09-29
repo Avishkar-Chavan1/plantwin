@@ -57,9 +57,7 @@ def test_validation_requires_actual_evaluation_and_governed_stage() -> None:
             model_version_id=model.id,
             dataset_version_id=version.id,
             evaluation_type="PHYSICS_ONLY",
-            metrics={
-                "temperature_k": {"mae": 0.3, "rmse": 0.4, "r2": 0.98, "bias": 0.05}
-            },
+            metrics={"temperature_k": {"mae": 0.3, "rmse": 0.4, "r2": 0.98, "bias": 0.05}},
             residual_distribution={"temperature_k": {"p05": -0.5, "p50": 0.05, "p95": 0.5}},
             comparisons=[],
             observation_count=12,
@@ -81,9 +79,7 @@ def test_validation_requires_actual_evaluation_and_governed_stage() -> None:
         },
         "review_note": "Reviewed independent held-out engineering evaluation against the agreed acceptance limits.",
     }
-    response = client.post(
-        f"/api/v1/models/{model_id}/validate", headers=headers, json=body
-    )
+    response = client.post(f"/api/v1/models/{model_id}/validate", headers=headers, json=body)
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "VALIDATED"
     staged = client.post(f"/api/v1/models/{model_id}/stage", headers=headers)

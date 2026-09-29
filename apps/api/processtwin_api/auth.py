@@ -2,23 +2,31 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Protocol, cast
 from uuid import UUID
 
 import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from passlib.context import CryptContext
+from passlib.context import CryptContext  # type: ignore[import-untyped]
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import get_settings
-from .database import get_session
+from .database import get_session, set_request_principal, set_tenant_context
 from .models import OrganizationMembership, RoleName, User
 
-password_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+class PasswordContext(Protocol):
+    def hash(self, secret: str) -> str: ...
+
+    def verify(self, secret: str, hash: str) -> bool: ...
+
+
+password_context = cast(PasswordContext, CryptContext(schemes=["bcrypt"], deprecated="auto"))
 bearer = HTTPBearer(auto_error=False)
 SessionDependency = Annotated[Session, Depends(get_session)]
 
@@ -38,11 +46,21 @@ def verify_password(password: str, password_hash: str) -> bool:
     return password_context.verify(password, password_hash)
 
 
-def create_token(user_id: UUID, token_type: str, expires_in: timedelta) -> str:
+def create_token(
+    user_id: UUID, token_type: str, expires_in: timedelta, *, token_id: UUID | None = None
+) -> str:
     settings = get_settings()
     now = datetime.now(UTC)
     return jwt.encode(
-        {"sub": str(user_id), "type": token_type, "iat": now, "exp": now + expires_in},
+        {
+            "sub": str(user_id),
+            "type": token_type,
+            "iat": now,
+            "exp": now + expires_in,
+            "jti": str(token_id) if token_id else None,
+            "iss": settings.jwt_issuer,
+            "aud": settings.jwt_audience,
+        },
         settings.jwt_secret,
         algorithm=settings.jwt_algorithm,
     )
@@ -58,6 +76,8 @@ def decode_token(credentials: HTTPAuthorizationCredentials | None) -> UUID:
             credentials.credentials,
             get_settings().jwt_secret,
             algorithms=[get_settings().jwt_algorithm],
+            issuer=get_settings().jwt_issuer,
+            audience=get_settings().jwt_audience,
         )
         if payload.get("type") != "access":
             raise ValueError("Not an access token")
@@ -68,14 +88,18 @@ def decode_token(credentials: HTTPAuthorizationCredentials | None) -> UUID:
         ) from exc
 
 
-def decode_refresh_token(token: str) -> UUID:
+def decode_refresh_token(token: str) -> tuple[UUID, UUID]:
     try:
         payload = jwt.decode(
-            token, get_settings().jwt_secret, algorithms=[get_settings().jwt_algorithm]
+            token,
+            get_settings().jwt_secret,
+            algorithms=[get_settings().jwt_algorithm],
+            issuer=get_settings().jwt_issuer,
+            audience=get_settings().jwt_audience,
         )
         if payload.get("type") != "refresh":
             raise ValueError("Not a refresh token")
-        return UUID(str(payload["sub"]))
+        return UUID(str(payload["sub"])), UUID(str(payload["jti"]))
     except (jwt.InvalidTokenError, KeyError, ValueError) as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired refresh token"
@@ -92,6 +116,7 @@ def current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive or unknown user"
         )
+    set_request_principal(session, str(user.id))
     return user
 
 
@@ -119,10 +144,11 @@ def tenant_context(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="No membership in requested organization"
         )
+    set_tenant_context(session, str(organization_id))
     return TenantContext(user=user, organization_id=organization_id, role=membership.role)
 
 
-def require_roles(*allowed: RoleName):
+def require_roles(*allowed: RoleName) -> Callable[[TenantContext], TenantContext]:
     def dependency(context: Annotated[TenantContext, Depends(tenant_context)]) -> TenantContext:
         if context.role not in allowed:
             raise HTTPException(

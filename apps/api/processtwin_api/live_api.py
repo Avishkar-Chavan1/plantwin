@@ -11,6 +11,7 @@ from sqlalchemy import desc, select
 
 from .audit import append_audit
 from .auth import SessionDependency, TenantContext, require_roles, tenant_context
+from .config import get_settings
 from .models import (
     DataSource,
     Equipment,
@@ -22,9 +23,7 @@ from .time_utils import as_utc
 
 router = APIRouter(prefix="/api/v1/data-sources", tags=["live-read-only-ingestion"])
 TenantDependency = Annotated[TenantContext, Depends(tenant_context)]
-EngineerDependency = Annotated[
-    TenantContext, Depends(require_roles("OWNER", "ADMIN", "ENGINEER"))
-]
+EngineerDependency = Annotated[TenantContext, Depends(require_roles("OWNER", "ADMIN", "ENGINEER"))]
 
 
 class SourceMappingInput(BaseModel):
@@ -33,6 +32,16 @@ class SourceMappingInput(BaseModel):
     sensor_id: UUID
     canonical_name: str = Field(min_length=1, max_length=128)
     source_unit: str = Field(min_length=1, max_length=32)
+
+    @field_validator("source_key")
+    @classmethod
+    def explicit_source_key(cls, value: str) -> str:
+        cleaned = value.strip()
+        if any(character in cleaned for character in ("+", "#", "\x00", "\r", "\n")):
+            raise ValueError(
+                "Source keys must be explicit and may not contain wildcards or controls"
+            )
+        return cleaned
 
 
 class CreateSourceRequest(BaseModel):
@@ -44,7 +53,7 @@ class CreateSourceRequest(BaseModel):
     mappings: list[SourceMappingInput] = Field(min_length=1, max_length=200)
     stale_after_s: int = Field(default=30, ge=1, le=86_400)
     mqtt_port: int = Field(default=1883, ge=1, le=65_535)
-    mqtt_client_id: str = Field(default="processtwin-readonly", min_length=1, max_length=100)
+    mqtt_client_id: str = Field(default="processtwin-readonly", min_length=1, max_length=80)
     opcua_sampling_interval_ms: int = Field(default=1000, ge=100, le=60_000)
 
     @field_validator("endpoint")
@@ -82,7 +91,11 @@ def _source_payload(source: DataSource, now: datetime | None = None) -> dict[str
     if source.last_error:
         status = "ERROR"
     elif not source.last_success_at:
-        status = source.status if source.status in {"CONNECTED", "DISCONNECTED", "ERROR"} else "DISCONNECTED"
+        status = (
+            source.status
+            if source.status in {"CONNECTED", "DISCONNECTED", "ERROR"}
+            else "DISCONNECTED"
+        )
     elif freshness is not None and freshness > stale_after:
         status = "STALE"
     return {
@@ -123,6 +136,18 @@ def create_source(
     session: SessionDependency,
     request: Request,
 ) -> dict[str, Any]:
+    settings = get_settings()
+    if (
+        settings.is_production
+        and payload.source_type == "MQTT"
+        and not payload.endpoint.startswith("mqtts://")
+    ):
+        _raise("MQTT_TLS_REQUIRED", "Production MQTT sources must use mqtts://")
+    if settings.is_production and payload.source_type == "OPCUA":
+        _raise(
+            "OPCUA_CERTIFICATE_CONFIGURATION_REQUIRED",
+            "OPC-UA is disabled in production until certificate-based trust configuration is supplied",
+        )
     plant = session.scalar(
         select(Plant).where(
             Plant.id == payload.plant_id,
@@ -146,16 +171,24 @@ def create_source(
             )
         )
         if sensor is None:
-            _raise("SENSOR_NOT_FOUND", f"Enabled sensor {item.sensor_id} was not found in this plant", 404)
+            _raise(
+                "SENSOR_NOT_FOUND",
+                f"Enabled sensor {item.sensor_id} was not found in this plant",
+                404,
+            )
         try:
             from packages.units import convert
 
             convert(1.0, item.source_unit, sensor.unit)
         except ValueError:
-            _raise("INVALID_SOURCE_UNIT", f"Source unit for {item.source_key} is incompatible with sensor unit {sensor.unit}")
+            _raise(
+                "INVALID_SOURCE_UNIT",
+                f"Source unit for {item.source_key} is incompatible with sensor unit {sensor.unit}",
+            )
+    endpoint = urlsplit(payload.endpoint)
     config: dict[str, Any] = {
         "stale_after_s": payload.stale_after_s,
-        "mqtt_port": payload.mqtt_port,
+        "mqtt_port": endpoint.port or (8883 if endpoint.scheme == "mqtts" else payload.mqtt_port),
         "mqtt_client_id": payload.mqtt_client_id,
         "opcua_sampling_interval_ms": payload.opcua_sampling_interval_ms,
         "mapping_count": len(payload.mappings),
@@ -191,7 +224,11 @@ def create_source(
         f"data_source:{source.id}",
         user_id=context.user.id,
         ip_address=request.client.host if request.client else None,
-        metadata={"source_type": source.source_type, "mapping_count": len(payload.mappings), "read_only": True},
+        metadata={
+            "source_type": source.source_type,
+            "mapping_count": len(payload.mappings),
+            "read_only": True,
+        },
     )
     session.commit()
     return _source_payload(source)

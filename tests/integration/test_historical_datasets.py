@@ -97,9 +97,7 @@ def mapping_payload(equipment_id: str) -> str:
 
 
 def test_csv_historical_source_and_tag_mapping_normalize_preserving_values() -> None:
-    rows = CsvHistoricalSource().read(
-        b"timestamp,TI_101,PI_101\n2026-01-01T00:00:00Z,25,1.5\n"
-    )
+    rows = CsvHistoricalSource().read(b"timestamp,TI_101,PI_101\n2026-01-01T00:00:00Z,25,1.5\n")
     observations = inspect_historical_rows(
         rows,
         [
@@ -234,14 +232,14 @@ def test_import_and_exploration_endpoints_are_tenant_scoped() -> None:
     assert temperature["missing_count"] == 1
     assert temperature["missingness_pct"] == pytest.approx(100 / 3)
     assert "reactor.pressure" in exploration.json()["correlation"]
-    hierarchy = client.get(
-        f"/api/v1/datasets/hierarchy?plant_id={plant.id}", headers=headers
-    )
+    hierarchy = client.get(f"/api/v1/datasets/hierarchy?plant_id={plant.id}", headers=headers)
     assert hierarchy.status_code == 200
     assert hierarchy.json()["equipment"][0]["id"] == str(equipment.id)
     assert client.get(f"/api/v1/datasets/{version_id}/exploration").status_code == 401
     headers["X-Organization-ID"] = "00000000-0000-0000-0000-000000000001"
-    assert client.get(f"/api/v1/datasets/{version_id}/exploration", headers=headers).status_code == 403
+    assert (
+        client.get(f"/api/v1/datasets/{version_id}/exploration", headers=headers).status_code == 403
+    )
     with SessionLocal() as session:
         assert session.query(DatasetVersion).count() == 1
         persisted = list(session.query(DatasetObservation).all())
@@ -287,9 +285,7 @@ def test_parquet_historical_source_when_optional_dependency_is_installed() -> No
     pyarrow = pytest.importorskip("pyarrow", exc_type=ImportError)
     parquet = pytest.importorskip("pyarrow.parquet", exc_type=ImportError)
     sink = io.BytesIO()
-    table = pyarrow.Table.from_pylist(
-        [{"timestamp": "2026-01-01T00:00:00Z", "TI_101": 25.0}]
-    )
+    table = pyarrow.Table.from_pylist([{"timestamp": "2026-01-01T00:00:00Z", "TI_101": 25.0}])
     parquet.write_table(table, sink)
     assert read_historical_source("plant.parquet", sink.getvalue()) == [
         {"timestamp": "2026-01-01T00:00:00Z", "TI_101": 25.0}

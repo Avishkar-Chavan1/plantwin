@@ -68,5 +68,7 @@ def log_model_metadata(
             if numeric_metrics:
                 mlflow.log_metrics(numeric_metrics)
             return run.info.run_id, "LOGGED"
-    except Exception as exc:  # The relational registry retains the complete record if MLflow is unavailable.
+    except (
+        Exception
+    ) as exc:  # The relational registry retains the complete record if MLflow is unavailable.
         return None, f"FAILED:{type(exc).__name__}"

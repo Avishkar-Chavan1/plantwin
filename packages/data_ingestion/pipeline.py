@@ -80,14 +80,18 @@ def inspect_historical_rows(
     missing_columns = {mapping.source_tag for mapping in mappings} - headers
     if timestamp_column not in headers or missing_columns:
         names = ", ".join(sorted(missing_columns))
-        raise ValueError(f"Missing required timestamp or mapped columns: {names or timestamp_column}")
+        raise ValueError(
+            f"Missing required timestamp or mapped columns: {names or timestamp_column}"
+        )
 
     unit_targets: dict[str, str] = {}
     for mapping in mappings:
         try:
             unit_targets[mapping.source_tag] = si_unit(mapping.source_unit)
         except (KeyError, ValueError) as exc:
-            raise ValueError(f"Unsupported unit for {mapping.source_tag}: {mapping.source_unit}") from exc
+            raise ValueError(
+                f"Unsupported unit for {mapping.source_tag}: {mapping.source_unit}"
+            ) from exc
 
     observations: list[HistoricalObservation] = []
     previous_values: dict[str, list[float]] = {mapping.source_tag: [] for mapping in mappings}
@@ -182,14 +186,32 @@ def inspect_historical_rows(
                 if (
                     timestamp is not None
                     and mapping.max_drift_per_hour is not None
-                    and _drift_per_hour(previous_points[mapping.source_tag] + [(timestamp, normalized_value)])
+                    and _drift_per_hour(
+                        previous_points[mapping.source_tag] + [(timestamp, normalized_value)]
+                    )
                     > mapping.max_drift_per_hour
                 ):
                     reasons.append("SENSOR_DRIFT")
 
             if not reasons:
                 reasons.append("ALL_CONFIGURED_CHECKS_PASSED")
-            if any(reason in {"TIMESTAMP_MISSING", "TIMESTAMP_INVALID", "TIMESTAMP_TIMEZONE_MISSING", "DUPLICATE_TIMESTAMP", "OUT_OF_ORDER_TIMESTAMP", "NON_NUMERIC_VALUE", "NON_FINITE_VALUE", "NON_FINITE_NORMALIZED_VALUE", "UNIT_MISMATCH", "BELOW_ENGINEERING_LIMIT", "ABOVE_ENGINEERING_LIMIT"} for reason in reasons):
+            if any(
+                reason
+                in {
+                    "TIMESTAMP_MISSING",
+                    "TIMESTAMP_INVALID",
+                    "TIMESTAMP_TIMEZONE_MISSING",
+                    "DUPLICATE_TIMESTAMP",
+                    "OUT_OF_ORDER_TIMESTAMP",
+                    "NON_NUMERIC_VALUE",
+                    "NON_FINITE_VALUE",
+                    "NON_FINITE_NORMALIZED_VALUE",
+                    "UNIT_MISMATCH",
+                    "BELOW_ENGINEERING_LIMIT",
+                    "ABOVE_ENGINEERING_LIMIT",
+                }
+                for reason in reasons
+            ):
                 quality = QualityStatusName.BAD
             elif "MISSING_VALUE" in reasons:
                 quality = QualityStatusName.MISSING
@@ -228,4 +250,8 @@ def summarize_quality(observations: Sequence[HistoricalObservation]) -> dict[str
         for reason in observation.quality_reasons:
             if reason != "ALL_CONFIGURED_CHECKS_PASSED":
                 reason_counts[reason] = reason_counts.get(reason, 0) + 1
-    return {"measurements": len(observations), "status_counts": counts, "reason_counts": reason_counts}
+    return {
+        "measurements": len(observations),
+        "status_counts": counts,
+        "reason_counts": reason_counts,
+    }

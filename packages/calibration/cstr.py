@@ -67,7 +67,9 @@ class HistoricalCSTRSeries:
         count = len(self.timestamps)
         if count < 10:
             raise ValueError("At least 10 aligned GOOD observations are required")
-        if any(right <= left for left, right in zip(self.timestamps, self.timestamps[1:], strict=False)):
+        if any(
+            right <= left for left, right in zip(self.timestamps, self.timestamps[1:], strict=False)
+        ):
             raise ValueError("Calibration timestamps must be strictly increasing and unique")
         for name in (
             "feed_flow_m3_s",
@@ -127,13 +129,55 @@ class CalibrationResult:
 
 
 _PARAMETER_SPECS: dict[str, tuple[str, str, float, float, str]] = {
-    "k0_main_s": ("pre_exponential_factor_s", "s^-1", 1e-6, 1e9, "Desired reaction pre-exponential factor"),
-    "Ea_main_j_mol": ("activation_energy_j_mol", "J/mol", 0.0, 250_000.0, "Desired reaction activation energy"),
-    "deltaH_main_j_mol": ("reaction_enthalpy_j_mol", "J/mol", -500_000.0, 500_000.0, "Desired reaction enthalpy"),
-    "k0_side_s": ("side_pre_exponential_factor_s", "s^-1", 0.0, 1e9, "Side reaction pre-exponential factor"),
-    "Ea_side_j_mol": ("side_activation_energy_j_mol", "J/mol", 0.0, 250_000.0, "Side reaction activation energy"),
-    "deltaH_side_j_mol": ("side_reaction_enthalpy_j_mol", "J/mol", -500_000.0, 500_000.0, "Side reaction enthalpy"),
-    "U_w_m2_k": ("heat_transfer_coefficient_w_m2_k", "W/(m^2 K)", 0.0, 20_000.0, "Overall heat-transfer coefficient"),
+    "k0_main_s": (
+        "pre_exponential_factor_s",
+        "s^-1",
+        1e-6,
+        1e9,
+        "Desired reaction pre-exponential factor",
+    ),
+    "Ea_main_j_mol": (
+        "activation_energy_j_mol",
+        "J/mol",
+        0.0,
+        250_000.0,
+        "Desired reaction activation energy",
+    ),
+    "deltaH_main_j_mol": (
+        "reaction_enthalpy_j_mol",
+        "J/mol",
+        -500_000.0,
+        500_000.0,
+        "Desired reaction enthalpy",
+    ),
+    "k0_side_s": (
+        "side_pre_exponential_factor_s",
+        "s^-1",
+        0.0,
+        1e9,
+        "Side reaction pre-exponential factor",
+    ),
+    "Ea_side_j_mol": (
+        "side_activation_energy_j_mol",
+        "J/mol",
+        0.0,
+        250_000.0,
+        "Side reaction activation energy",
+    ),
+    "deltaH_side_j_mol": (
+        "side_reaction_enthalpy_j_mol",
+        "J/mol",
+        -500_000.0,
+        500_000.0,
+        "Side reaction enthalpy",
+    ),
+    "U_w_m2_k": (
+        "heat_transfer_coefficient_w_m2_k",
+        "W/(m^2 K)",
+        0.0,
+        20_000.0,
+        "Overall heat-transfer coefficient",
+    ),
     "A_m2": ("heat_transfer_area_m2", "m^2", 1e-6, 1e5, "Effective heat-transfer area"),
     "V_m3": ("volume_m3", "m^3", 1e-6, 1e6, "Reactor working volume"),
     "rho_kg_m3": ("density_kg_m3", "kg/m^3", 1e-6, 20_000.0, "Process fluid density"),
@@ -149,7 +193,9 @@ def parameter_values(parameters: CSTRParameters) -> dict[str, float]:
     }
 
 
-def volumetric_flow_m3_s(values: np.ndarray, normalized_unit: str, density_kg_m3: float) -> np.ndarray:
+def volumetric_flow_m3_s(
+    values: np.ndarray, normalized_unit: str, density_kg_m3: float
+) -> np.ndarray:
     """Convert a normalized historian feed flow to the CSTR's volumetric-flow SI input."""
     flow = np.asarray(values, dtype=float)
     if not np.isfinite(flow).all() or np.any(flow < 0):
@@ -347,12 +393,12 @@ def calibrate_cstr(
         raise ValueError("Each calibration parameter needs finite increasing bounds")
     for name, (minimum, maximum) in bounds.items():
         if minimum < _PARAMETER_SPECS[name][2] or maximum > _PARAMETER_SPECS[name][3]:
-            raise ValueError(f"Bounds for {name} exceed its physically admissible calibration range")
+            raise ValueError(
+                f"Bounds for {name} exceed its physically admissible calibration range"
+            )
     if any(
         value < lower or value > upper
-        for value, lower, upper in zip(
-            initial_values, lower_values, upper_values, strict=True
-        )
+        for value, lower, upper in zip(initial_values, lower_values, upper_values, strict=True)
     ):
         raise ValueError("Initial parameter values must lie within their calibration bounds")
 
@@ -361,7 +407,11 @@ def calibrate_cstr(
     train_slice = slice(0, train_end)
     targets = _state_targets(series)
     scales = {
-        name: max(float(np.std(values[train_slice])), abs(float(np.mean(values[train_slice]))) * 0.01, 1e-6)
+        name: max(
+            float(np.std(values[train_slice])),
+            abs(float(np.mean(values[train_slice]))) * 0.01,
+            1e-6,
+        )
         for name, values in targets.items()
         if len(values[train_slice]) > 0
     }

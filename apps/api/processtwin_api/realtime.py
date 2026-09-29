@@ -160,7 +160,9 @@ class LiveIngestionGateway:
         message: TelemetryMessage,
     ) -> dict[str, Any]:
         if not source.read_only:
-            raise ValueError("ProcessTwin sources are read-only; control/write operations are prohibited")
+            raise ValueError(
+                "ProcessTwin sources are read-only; control/write operations are prohibited"
+            )
         mapping = session.scalar(
             select(SourceTagMapping).where(
                 SourceTagMapping.organization_id == source.organization_id,
@@ -301,7 +303,9 @@ class LiveIngestionGateway:
                 .where(
                     SensorReading.organization_id == organization_id,
                     SensorReading.sensor_id == sensor.id,
-                    SensorReading.quality_status.in_((QualityStatusName.GOOD, QualityStatusName.SUSPECT)),
+                    SensorReading.quality_status.in_(
+                        (QualityStatusName.GOOD, QualityStatusName.SUSPECT)
+                    ),
                 )
                 .order_by(desc(SensorReading.timestamp))
                 .limit(1)
@@ -314,7 +318,9 @@ class LiveIngestionGateway:
             ages.append(max(0.0, (current_time - latest_timestamp).total_seconds()))
             if latest.data_source_id:
                 source_ids.add(str(latest.data_source_id))
-            names = [tag.canonical_name for tag in maps_by_sensor[sensor.id]] or [sensor.measurement_type]
+            names = [tag.canonical_name for tag in maps_by_sensor[sensor.id]] or [
+                sensor.measurement_type
+            ]
             for name in names:
                 previous = canonical.get(name)
                 if previous is None or latest_timestamp > as_utc(previous[0].timestamp):
@@ -339,7 +345,12 @@ class LiveIngestionGateway:
             session.flush()
             return state, None
         mode = next(iter(modes))
-        required = ("reactor.feed_flow", "reactor.feed_temperature", "reactor.feed_concentration", "reactor.cooling_temperature")
+        required = (
+            "reactor.feed_flow",
+            "reactor.feed_temperature",
+            "reactor.feed_concentration",
+            "reactor.cooling_temperature",
+        )
         missing = [name for name in required if name not in canonical]
         measured: dict[str, float] = {}
         for name, (reading, _sensor) in canonical.items():
@@ -349,7 +360,9 @@ class LiveIngestionGateway:
             "good_count": sum(item is QualityStatusName.GOOD for item in qualities),
             "suspect_count": sum(item is QualityStatusName.SUSPECT for item in qualities),
             "sensor_count": len(qualities),
-            "latest_statuses": {name: row[0].quality_status.value for name, row in canonical.items()},
+            "latest_statuses": {
+                name: row[0].quality_status.value for name, row in canonical.items()
+            },
         }
         validated = session.scalar(
             select(ModelVersion)
@@ -366,7 +379,11 @@ class LiveIngestionGateway:
             if validated and validated.physics_parameter_set_id
             else None
         )
-        parameters = parameter_set_from_values(parameters_record.parameters) if parameters_record else CSTRParameters()
+        parameters = (
+            parameter_set_from_values(parameters_record.parameters)
+            if parameters_record
+            else CSTRParameters()
+        )
         physics = CSTRPhysicsModel(parameters)
         prediction: dict[str, Any] = {}
         status = "WAITING_FOR_REQUIRED_INPUTS"
@@ -385,7 +402,11 @@ class LiveIngestionGateway:
             try:
                 steady = physics.steady_state(inputs)
                 metrics = physics.metrics(steady, inputs)
-                residual = abs(measured["reactor.temperature"] - steady.temperature_k) if "reactor.temperature" in measured else None
+                residual = (
+                    abs(measured["reactor.temperature"] - steady.temperature_k)
+                    if "reactor.temperature" in measured
+                    else None
+                )
                 prediction = {
                     "temperature_k": steady.temperature_k,
                     "conversion": metrics.conversion,
@@ -395,10 +416,17 @@ class LiveIngestionGateway:
                     "heat_removal_w": metrics.heat_removal_w,
                 }
                 envelope = _model_in_envelope(validated, inputs, parameters.density_kg_m3)
-                status = "OUTSIDE_VALIDATED_MODEL_RANGE" if envelope is False else ("VALIDATED_PHYSICS" if validated else "UNVALIDATED_PHYSICS_REFERENCE")
+                status = (
+                    "OUTSIDE_VALIDATED_MODEL_RANGE"
+                    if envelope is False
+                    else ("VALIDATED_PHYSICS" if validated else "UNVALIDATED_PHYSICS_REFERENCE")
+                )
                 if envelope is False:
                     prediction = {}
-                uncertainty = {"temperature_k": None, "reason": "No current validated uncertainty estimate"}
+                uncertainty = {
+                    "temperature_k": None,
+                    "reason": "No current validated uncertainty estimate",
+                }
                 if (
                     validated
                     and validated.model_type == "physics_plus_ml_residual"
@@ -412,14 +440,16 @@ class LiveIngestionGateway:
 
                     artifact = HybridResidualModel.load(Path(validated.artifact_path))
                     features = np.asarray(
-                        [[
-                            inputs.feed_temperature_k,
-                            inputs.pressure_pa,
-                            inputs.feed_flow_m3_s,
-                            inputs.feed_concentration_a_mol_m3,
-                            inputs.cooling_temperature_k,
-                            parameters.volume_m3 / max(inputs.feed_flow_m3_s, 1e-12),
-                        ]],
+                        [
+                            [
+                                inputs.feed_temperature_k,
+                                inputs.pressure_pa,
+                                inputs.feed_flow_m3_s,
+                                inputs.feed_concentration_a_mol_m3,
+                                inputs.cooling_temperature_k,
+                                parameters.volume_m3 / max(inputs.feed_flow_m3_s, 1e-12),
+                            ]
+                        ],
                         dtype=float,
                     )
                     _, hybrid_yield, interval = artifact.predict(
@@ -437,14 +467,17 @@ class LiveIngestionGateway:
         if validated:
             drift_event = session.scalar(
                 select(ModelDriftEvent)
-                .where(ModelDriftEvent.organization_id == organization_id, ModelDriftEvent.model_version_id == validated.id)
+                .where(
+                    ModelDriftEvent.organization_id == organization_id,
+                    ModelDriftEvent.model_version_id == validated.id,
+                )
                 .order_by(desc(ModelDriftEvent.created_at))
                 .limit(1)
             )
         drift = bool(drift_event and drift_event.status == "MODEL_DRIFT_DETECTED")
         health, score, factors = _health_factors(
             ages=ages,
-            good_fraction=quality["good_count"] / max(1, quality["sensor_count"]),
+            good_fraction=float(quality["good_count"]) / max(1, int(quality["sensor_count"])),
             missing=missing,
             residual_k=residual,
             ml_residual=ml_residual,
@@ -452,7 +485,11 @@ class LiveIngestionGateway:
             drift=drift,
             stale_after_s=30.0,
         )
-        factors["health_score"] = {"value": score, "unit": "points", "method": "unweighted mean of documented available factors"}
+        factors["health_score"] = {
+            "value": score,
+            "unit": "points",
+            "method": "unweighted mean of documented available factors",
+        }
         state_values = {
             "mode": mode,
             "measurements": {
@@ -489,10 +526,15 @@ class LiveIngestionGateway:
         )
         session.add(state)
         session.flush()
-        anomaly = self._anomaly(session, organization_id, equipment_id, state, canonical, residual, envelope)
+        anomaly = self._anomaly(
+            session, organization_id, equipment_id, state, canonical, residual, envelope
+        )
         if anomaly:
-            state_values["potential_contributing_variables"] = anomaly.potential_contributing_variables
+            state_values["potential_contributing_variables"] = (
+                anomaly.potential_contributing_variables
+            )
         return state, anomaly
+
     def _anomaly(
         self,
         session: Session,
@@ -520,11 +562,17 @@ class LiveIngestionGateway:
                     .limit(30)
                 )
             )
-            values = [float(item.normalized_value) for item in history[1:] if item.normalized_value is not None]
+            values = [
+                float(item.normalized_value)
+                for item in history[1:]
+                if item.normalized_value is not None
+            ]
             if len(values) >= 7 and reading.normalized_value is not None:
                 center = median(values)
                 mad = median([abs(value - center) for value in values])
-                robust_z = abs(float(reading.normalized_value) - center) / max(1.4826 * mad, abs(center) * 1e-6, 1e-9)
+                robust_z = abs(float(reading.normalized_value) - center) / max(
+                    1.4826 * mad, abs(center) * 1e-6, 1e-9
+                )
                 evidence[name] = {"statistical_robust_z": robust_z, "historical_median": center}
                 if robust_z >= 3.5:
                     component_scores.append(min(1.0, robust_z / 10.0))
@@ -551,9 +599,11 @@ class LiveIngestionGateway:
                 for row in history
                 if row.normalized_value is not None
             }
-        aligned_times = set.intersection(
-            *(set(values) for values in aligned_by_name.values())
-        ) if aligned_by_name else set()
+        aligned_times = (
+            set.intersection(*(set(values) for values in aligned_by_name.values()))
+            if aligned_by_name
+            else set()
+        )
         if len(names) >= 2 and len(aligned_times) >= 20:
             try:
                 from packages.ml.anomaly import PotentialAnomalyDetector
@@ -583,11 +633,18 @@ class LiveIngestionGateway:
                     deviations = []
                     for column, name in enumerate(names):
                         center = float(np.median(baseline[:, column]))
-                        scale = max(float(np.median(np.abs(baseline[:, column] - center))) * 1.4826, 1e-9)
+                        scale = max(
+                            float(np.median(np.abs(baseline[:, column] - center))) * 1.4826, 1e-9
+                        )
                         deviations.append((abs(float(current[0, column]) - center) / scale, name))
-                    contributors.extend(name for _deviation, name in sorted(deviations, reverse=True)[:3])
+                    contributors.extend(
+                        name for _deviation, name in sorted(deviations, reverse=True)[:3]
+                    )
             except (ImportError, ValueError, RuntimeError) as exc:
-                evidence["ml_isolation_forest"] = {"status": "UNAVAILABLE", "reason": type(exc).__name__}
+                evidence["ml_isolation_forest"] = {
+                    "status": "UNAVAILABLE",
+                    "reason": type(exc).__name__,
+                }
         if residual_k is not None:
             evidence["physics_residual_temperature_k"] = residual_k
             if residual_k >= 5.0:
@@ -621,7 +678,11 @@ class LiveIngestionGateway:
             )
         )
         return anomaly
-    def _model_in_envelope(model: ModelVersion | None, inputs: CSTRInputs, density: float) -> bool | None:
+
+    @staticmethod
+    def _model_in_envelope(
+        model: ModelVersion | None, inputs: CSTRInputs, density: float
+    ) -> bool | None:
         if model is None or not model.operating_envelope:
             return None
         values = {

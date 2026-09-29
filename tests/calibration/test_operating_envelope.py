@@ -12,8 +12,7 @@ def sample_series() -> HistoricalCSTRSeries:
     count = 10
     return HistoricalCSTRSeries(
         timestamps=tuple(
-            datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=index)
-            for index in range(count)
+            datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=index) for index in range(count)
         ),
         feed_flow_m3_s=np.full(count, 0.02),
         feed_temperature_k=np.full(count, 453.15),
@@ -46,6 +45,4 @@ def test_mass_flow_envelope_uses_the_model_density_not_an_assumption() -> None:
     series = sample_series()
     limits = {"feed_flow_kg_h": {"minimum": 35_000.0, "maximum": 37_000.0}}
     assert _envelope_outside(series, limits, density_kg_m3=500.0) == {}
-    assert _envelope_outside(series, limits, density_kg_m3=1000.0) == {
-        "feed_flow_kg_h": 10
-    }
+    assert _envelope_outside(series, limits, density_kg_m3=1000.0) == {"feed_flow_kg_h": 10}

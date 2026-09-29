@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from scipy.optimize import differential_evolution
+from scipy.optimize import differential_evolution  # type: ignore[import-untyped]
 
 from packages.physics import CSTRInputs, CSTRPhysicsModel
 

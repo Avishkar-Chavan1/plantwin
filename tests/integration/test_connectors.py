@@ -31,8 +31,7 @@ def test_csv_connector_rejects_missing_columns_and_accepts_valid_rows() -> None:
         parse_csv_rows(b"timestamp,value\n2026-01-01T00:00:00Z,1\n")
     sensor_id = str(uuid4())
     raw = (
-        "sensor_id,timestamp,value,unit\n"
-        f"{sensor_id},2026-01-01T00:00:00Z,180.2,degC\n"
+        f"sensor_id,timestamp,value,unit\n{sensor_id},2026-01-01T00:00:00Z,180.2,degC\n"
     ).encode()
     parsed = parse_csv_rows(raw)
     assert len(parsed) == 1
@@ -40,10 +39,7 @@ def test_csv_connector_rejects_missing_columns_and_accepts_valid_rows() -> None:
 
 
 def test_csv_connector_supports_arbitrary_plant_tags() -> None:
-    raw = (
-        b"timestamp,TI_101,PI_101,FI_101,AI_101\n"
-        b"2026-01-01T00:00:00Z,180,10.1,72,2.5\n"
-    )
+    raw = b"timestamp,TI_101,PI_101,FI_101,AI_101\n2026-01-01T00:00:00Z,180,10.1,72,2.5\n"
     rows = parse_csv_dataset(
         raw,
         tag_mapping={

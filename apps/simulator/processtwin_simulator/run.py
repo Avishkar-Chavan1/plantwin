@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from packages.units import si_unit, to_si
 from sqlalchemy import select
 
+from apps.api.processtwin_api.config import get_settings
 from apps.api.processtwin_api.database import Base, SessionLocal, engine
 from apps.api.processtwin_api.models import Organization, QualityStatusName, Sensor, SensorReading
 
@@ -15,7 +16,11 @@ from .plant import SyntheticCSTRPlant
 
 def append_live_sample() -> int:
     """Append one explicitly simulated instantaneous sample for an already-seeded demo tenant."""
-    Base.metadata.create_all(bind=engine)
+    settings = get_settings()
+    if settings.is_production:
+        raise RuntimeError("The synthetic simulator is disabled in production")
+    if settings.auto_create_schema:
+        Base.metadata.create_all(bind=engine)
     with SessionLocal() as session:
         organization = session.scalar(
             select(Organization).where(Organization.name == "ProcessTwin Demonstration")

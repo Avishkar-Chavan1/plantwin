@@ -30,7 +30,9 @@ REQUIRED_TAGS = (
 )
 
 
-def configure_live_fixture() -> tuple[TestClient, dict[str, str], object, dict[str, Sensor], DataSource]:
+def configure_live_fixture() -> tuple[
+    TestClient, dict[str, str], object, dict[str, Sensor], DataSource
+]:
     client, headers, plant, equipment = tenant_client()
     sensors: dict[str, Sensor] = {}
     with SessionLocal() as session:
@@ -158,7 +160,11 @@ def test_read_only_source_ingestion_twin_anomaly_optimization_review_audit() -> 
     assert twin_response.json()["mode"] == "LIVE_READ_ONLY"
     anomaly_response = client.get("/api/v1/anomalies", headers=headers)
     assert anomaly_response.status_code == 200
-    anomaly = next(item for item in anomaly_response.json()["items"] if item["equipment_id"] == str(equipment_id))
+    anomaly = next(
+        item
+        for item in anomaly_response.json()["items"]
+        if item["equipment_id"] == str(equipment_id)
+    )
     assert anomaly["label"] == "POTENTIAL ANOMALY"
     assert anomaly["potential_contributing_variables"]
     assert anomaly["causality_claimed"] is False
@@ -200,16 +206,35 @@ def test_read_only_source_ingestion_twin_anomaly_optimization_review_audit() -> 
     simulation = client.post(
         "/api/v1/simulations",
         headers=headers,
-        json={"equipment_id": str(equipment_id), "model_version_id": str(model_id), "temperature_c": 180, "pressure_bar": 10, "flow_m3_h": 72},
+        json={
+            "equipment_id": str(equipment_id),
+            "model_version_id": str(model_id),
+            "temperature_c": 180,
+            "pressure_bar": 10,
+            "flow_m3_h": 72,
+        },
     )
     assert simulation.status_code == 200, simulation.text
     assert simulation.json()["mode"] == "SIMULATION"
     assert simulation.json()["model_version_id"] == str(model_id)
-    assert set(simulation.json()["baseline"]) >= {"temperature_c", "pressure_bar", "conversion_pct", "yield_pct", "selectivity_pct", "energy_proxy_kw"}
+    assert set(simulation.json()["baseline"]) >= {
+        "temperature_c",
+        "pressure_bar",
+        "conversion_pct",
+        "yield_pct",
+        "selectivity_pct",
+        "energy_proxy_kw",
+    }
     optimization = client.post(
         "/api/v1/optimization/runs",
         headers=headers,
-        json={"equipment_id": str(equipment_id), "model_version_id": str(model_id), "temperature_c": 180, "pressure_bar": 10, "flow_m3_h": 72},
+        json={
+            "equipment_id": str(equipment_id),
+            "model_version_id": str(model_id),
+            "temperature_c": 180,
+            "pressure_bar": 10,
+            "flow_m3_h": 72,
+        },
     )
     assert optimization.status_code == 200, optimization.text
     assert optimization.json()["constraints"]["status"] == "PASS"
@@ -219,13 +244,19 @@ def test_read_only_source_ingestion_twin_anomaly_optimization_review_audit() -> 
     review = client.post(
         f"/api/v1/recommendations/{recommendation_id}/review",
         headers=headers,
-        json={"decision": "REVIEWED", "comment": "Reviewed fixture recommendation and confirmed constraints are recorded."},
+        json={
+            "decision": "REVIEWED",
+            "comment": "Reviewed fixture recommendation and confirmed constraints are recorded.",
+        },
     )
     assert review.status_code == 200, review.text
     accepted = client.post(
         f"/api/v1/recommendations/{recommendation_id}/review",
         headers=headers,
-        json={"decision": "ACCEPTED", "comment": "Accepted for further human procedure review; no control action is initiated."},
+        json={
+            "decision": "ACCEPTED",
+            "comment": "Accepted for further human procedure review; no control action is initiated.",
+        },
     )
     assert accepted.status_code == 200
     reviews = client.get(f"/api/v1/recommendations/{recommendation_id}/reviews", headers=headers)

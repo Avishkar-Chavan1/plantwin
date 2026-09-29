@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import hmac
 import io
 import logging
+import re
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from time import perf_counter
 from typing import Annotated, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, status
 from fastapi.exceptions import RequestValidationError
@@ -41,7 +44,7 @@ from .contracts import (
     RefreshRequest,
     SimulationRequest,
 )
-from .database import Base, engine
+from .database import Base, database_is_ready, engine, set_request_principal, set_tenant_context
 from .datasets import router as datasets_router
 from .live_api import router as live_router
 from .modeling import router as modeling_router
@@ -56,6 +59,7 @@ from .models import (
     QualityEvent,
     QualityStatusName,
     Recommendation,
+    RefreshToken,
     RoleName,
     Sensor,
     SensorReading,
@@ -63,7 +67,10 @@ from .models import (
     TwinState,
     User,
 )
+from .observability import configure_logging
 from .quality import DataQualityService
+from .rate_limit import FixedWindowRateLimiter
+from .time_utils import as_utc
 from .workflow_api import router as workflow_router
 
 logger = logging.getLogger("processtwin.api")
@@ -72,6 +79,8 @@ REQUESTS = Counter(
 )
 LATENCY = Histogram("processtwin_api_request_seconds", "API request duration", ["path"])
 INGESTED = Counter("processtwin_sensor_readings_total", "Sensor readings persisted", ["quality"])
+RATE_LIMITER = FixedWindowRateLimiter()
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
 
 
 class ApiError(HTTPException):
@@ -81,28 +90,86 @@ class ApiError(HTTPException):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # Migration is preferred in deployment; this preserves a zero-dependency local developer start.
-    Base.metadata.create_all(bind=engine)
+    settings = get_settings()
+    configure_logging(settings.log_level)
+    # Migration is preferred in development and mandatory in production.
+    if settings.auto_create_schema:
+        Base.metadata.create_all(bind=engine)
     yield
 
 
-app = FastAPI(title="ProcessTwin API", version="0.1.0", lifespan=lifespan)
+settings = get_settings()
+app = FastAPI(
+    title="ProcessTwin API",
+    version="0.1.0",
+    lifespan=lifespan,
+    docs_url=None if settings.is_production else "/docs",
+    redoc_url=None if settings.is_production else "/redoc",
+)
 app.include_router(datasets_router)
 app.include_router(live_router)
 app.include_router(modeling_router)
 app.include_router(workflow_router)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=get_settings().cors_origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_origins=settings.cors_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Organization-ID", "X-Request-ID"],
+    expose_headers=["X-Request-ID", "Retry-After"],
+    max_age=600,
 )
 
 
 @app.middleware("http")
 async def request_context(request: Request, call_next: Any) -> Response:
-    request_id = request.headers.get("X-Request-ID") or __import__("uuid").uuid4().hex
+    supplied_request_id = request.headers.get("X-Request-ID", "")
+    request_id = (
+        supplied_request_id if _REQUEST_ID_RE.fullmatch(supplied_request_id) else uuid4().hex
+    )
+    if request.method != "OPTIONS" and request.url.path not in {"/health", "/ready", "/metrics"}:
+        client = request.client.host if request.client else "unknown"
+        limit = (
+            settings.login_rate_limit_requests
+            if request.url.path == "/api/v1/auth/login"
+            else settings.rate_limit_requests
+        )
+        allowed, retry_after = RATE_LIMITER.allow(
+            f"{client}:{request.url.path}",
+            limit=limit,
+            window_seconds=settings.rate_limit_window_seconds,
+        )
+        if not allowed:
+            response = JSONResponse(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                content={
+                    "error": {
+                        "code": "RATE_LIMITED",
+                        "message": "Too many requests; retry later",
+                        "request_id": request_id,
+                    }
+                },
+            )
+            response.headers["Retry-After"] = str(retry_after)
+            return response
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            too_large = int(content_length) > settings.max_request_bytes
+        except ValueError:
+            too_large = True
+        if too_large:
+            return JSONResponse(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                content={
+                    "error": {
+                        "code": "REQUEST_TOO_LARGE",
+                        "message": "Request exceeds configured size limit",
+                        "request_id": request_id,
+                    }
+                },
+            )
+    started = perf_counter()
     with LATENCY.labels(request.url.path).time():
         try:
             response = await call_next(request)
@@ -125,7 +192,24 @@ async def request_context(request: Request, call_next: Any) -> Response:
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    )
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    if settings.is_production:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     REQUESTS.labels(request.method, request.url.path, str(response.status_code)).inc()
+    logger.info(
+        "request_completed",
+        extra={
+            "event": "request_completed",
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status_code": response.status_code,
+            "duration_ms": round((perf_counter() - started) * 1_000, 2),
+        },
+    )
     return response
 
 
@@ -161,8 +245,26 @@ def health() -> dict[str, str]:
     return {"status": "ok", "service": "processtwin-api"}
 
 
+@app.get("/ready", tags=["system"])
+def ready() -> dict[str, str]:
+    if not database_is_ready():
+        raise ApiError(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "DATABASE_UNAVAILABLE", "Database is unavailable"
+        )
+    return {"status": "ready", "database": "ok"}
+
+
 @app.get("/metrics", include_in_schema=False)
-def metrics() -> Response:
+def metrics(request: Request) -> Response:
+    configured_token = settings.metrics_token
+    if configured_token:
+        supplied = request.headers.get("Authorization", "").removeprefix("Bearer ")
+        if not hmac.compare_digest(supplied, configured_token):
+            raise ApiError(
+                status.HTTP_401_UNAUTHORIZED,
+                "METRICS_AUTH_REQUIRED",
+                "Metrics authentication required",
+            )
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
@@ -177,27 +279,39 @@ def login(payload: LoginRequest, request: Request, session: SessionDependency) -
         raise ApiError(
             status.HTTP_401_UNAUTHORIZED, "INVALID_CREDENTIALS", "Invalid email or password"
         )
+    set_request_principal(session, str(user.id))
     memberships = list(
         session.scalars(
             select(OrganizationMembership).where(OrganizationMembership.user_id == user.id)
         )
     )
-    append_audit(
-        session,
-        memberships[0].organization_id,
-        "LOGIN",
-        "user",
-        user_id=user.id,
-        ip_address=request.client.host if request.client else None,
-    )
+    if not memberships:
+        raise ApiError(
+            status.HTTP_403_FORBIDDEN, "NO_ORGANIZATION_ACCESS", "User has no organization"
+        )
+    refresh_token_id = uuid4()
+    refresh_expiry = datetime.now(UTC) + timedelta(days=settings.refresh_token_expire_days)
+    session.add(RefreshToken(id=refresh_token_id, user_id=user.id, expires_at=refresh_expiry))
+    for membership in memberships:
+        set_tenant_context(session, str(membership.organization_id))
+        append_audit(
+            session,
+            membership.organization_id,
+            "LOGIN",
+            "user",
+            user_id=user.id,
+            ip_address=request.client.host if request.client else None,
+        )
     session.commit()
-    settings = get_settings()
     return {
         "access_token": create_token(
             user.id, "access", timedelta(minutes=settings.access_token_expire_minutes)
         ),
         "refresh_token": create_token(
-            user.id, "refresh", timedelta(days=settings.refresh_token_expire_days)
+            user.id,
+            "refresh",
+            timedelta(days=settings.refresh_token_expire_days),
+            token_id=refresh_token_id,
         ),
         "token_type": "bearer",
         "organizations": [
@@ -224,20 +338,90 @@ def me(user: Annotated[User, Depends(current_user)], session: SessionDependency)
 
 @app.post("/api/v1/auth/refresh", tags=["auth"])
 def refresh(payload: RefreshRequest, session: SessionDependency) -> dict[str, str]:
-    user = session.get(User, decode_refresh_token(payload.refresh_token))
+    user_id, token_id = decode_refresh_token(payload.refresh_token)
+    user = session.get(User, user_id)
     if user is None or not user.is_active:
         raise ApiError(
             status.HTTP_401_UNAUTHORIZED,
             "INVALID_REFRESH_TOKEN",
             "Refresh token user is no longer active",
         )
-    settings = get_settings()
+    set_request_principal(session, str(user.id))
+    stored_token = session.get(RefreshToken, token_id)
+    if (
+        stored_token is None
+        or stored_token.user_id != user.id
+        or stored_token.revoked_at is not None
+        or as_utc(stored_token.expires_at) <= datetime.now(UTC)
+    ):
+        raise ApiError(
+            status.HTTP_401_UNAUTHORIZED, "INVALID_REFRESH_TOKEN", "Refresh token is invalid"
+        )
+    membership = session.scalar(
+        select(OrganizationMembership).where(OrganizationMembership.user_id == user.id)
+    )
+    if membership is None:
+        raise ApiError(
+            status.HTTP_403_FORBIDDEN, "NO_ORGANIZATION_ACCESS", "User has no organization"
+        )
+    replacement_id = uuid4()
+    expires_at = datetime.now(UTC) + timedelta(days=settings.refresh_token_expire_days)
+    stored_token.revoked_at = datetime.now(UTC)
+    stored_token.replaced_by_id = replacement_id
+    session.add(RefreshToken(id=replacement_id, user_id=user.id, expires_at=expires_at))
+    set_tenant_context(session, str(membership.organization_id))
+    append_audit(
+        session,
+        membership.organization_id,
+        "REFRESH_TOKEN_ROTATED",
+        "user",
+        user_id=user.id,
+    )
+    session.commit()
     return {
         "access_token": create_token(
             user.id, "access", timedelta(minutes=settings.access_token_expire_minutes)
         ),
+        "refresh_token": create_token(
+            user.id,
+            "refresh",
+            timedelta(days=settings.refresh_token_expire_days),
+            token_id=replacement_id,
+        ),
         "token_type": "bearer",
     }
+
+
+@app.post("/api/v1/auth/logout", tags=["auth"])
+def logout(payload: RefreshRequest, session: SessionDependency) -> dict[str, str]:
+    user_id, token_id = decode_refresh_token(payload.refresh_token)
+    user = session.get(User, user_id)
+    if user is None:
+        raise ApiError(
+            status.HTTP_401_UNAUTHORIZED, "INVALID_REFRESH_TOKEN", "Refresh token is invalid"
+        )
+    set_request_principal(session, str(user.id))
+    stored_token = session.get(RefreshToken, token_id)
+    if stored_token is None or stored_token.user_id != user.id:
+        raise ApiError(
+            status.HTTP_401_UNAUTHORIZED, "INVALID_REFRESH_TOKEN", "Refresh token is invalid"
+        )
+    if stored_token.revoked_at is None:
+        stored_token.revoked_at = datetime.now(UTC)
+        membership = session.scalar(
+            select(OrganizationMembership).where(OrganizationMembership.user_id == user.id)
+        )
+        if membership is not None:
+            set_tenant_context(session, str(membership.organization_id))
+            append_audit(
+                session,
+                membership.organization_id,
+                "LOGOUT",
+                "user",
+                user_id=user.id,
+            )
+        session.commit()
+    return {"status": "logged_out"}
 
 
 TenantDependency = Annotated[TenantContext, Depends(tenant_context)]
@@ -542,13 +726,25 @@ def validated_cstr_configuration(
             "Select a tenant-owned VALIDATED/PRODUCTION CSTR model version before optimizing",
         )
     if not model_version.operating_envelope:
-        raise ApiError(422, "MODEL_ENVELOPE_REQUIRED", "Validated model has no configured operating envelope")
-    parameter_set = session.get(PhysicsParameterSet, model_version.physics_parameter_set_id) if model_version.physics_parameter_set_id else None
+        raise ApiError(
+            422, "MODEL_ENVELOPE_REQUIRED", "Validated model has no configured operating envelope"
+        )
+    parameter_set = (
+        session.get(PhysicsParameterSet, model_version.physics_parameter_set_id)
+        if model_version.physics_parameter_set_id
+        else None
+    )
     if parameter_set is None or parameter_set.organization_id != organization_id:
-        raise ApiError(422, "MODEL_PARAMETERS_REQUIRED", "Validated model has no tenant-owned parameter set")
+        raise ApiError(
+            422, "MODEL_PARAMETERS_REQUIRED", "Validated model has no tenant-owned parameter set"
+        )
     from .realtime import parameter_set_from_values
 
-    return model_version, CSTRPhysicsModel(parameter_set_from_values(parameter_set.parameters)), parameter_set
+    return (
+        model_version,
+        CSTRPhysicsModel(parameter_set_from_values(parameter_set.parameters)),
+        parameter_set,
+    )
 
 
 def optimization_envelope(model_version: ModelVersion, physics: CSTRPhysicsModel) -> Any:
@@ -572,11 +768,17 @@ def optimization_envelope(model_version: ModelVersion, physics: CSTRPhysicsModel
         low = float(value["minimum"]) * scale + offset
         high = float(value["maximum"]) * scale + offset
         if name in converted and converted[name] != (low, high):
-            raise ApiError(422, "INVALID_MODEL_ENVELOPE", f"Conflicting envelope definitions for {name}")
+            raise ApiError(
+                422, "INVALID_MODEL_ENVELOPE", f"Conflicting envelope definitions for {name}"
+            )
         converted[name] = (low, high)
     required = {"temperature_k", "pressure_pa", "flow_m3_s"}
     if not required.issubset(converted):
-        raise ApiError(422, "INCOMPLETE_MODEL_ENVELOPE", "Optimization requires temperature, pressure and feed-flow envelope bounds")
+        raise ApiError(
+            422,
+            "INCOMPLETE_MODEL_ENVELOPE",
+            "Optimization requires temperature, pressure and feed-flow envelope bounds",
+        )
     temperature = converted["temperature_k"]
     pressure = converted["pressure_pa"]
     flow = converted["flow_m3_s"]
@@ -622,7 +824,9 @@ def run_simulation(
     parameter_set: PhysicsParameterSet | None = None
     model = CSTRPhysicsModel()
     envelope: dict[str, Any] = {}
-    warnings: list[str] = ["SIMULATION MODE: scenario values are computed; no live measurements or control commands are used."]
+    warnings: list[str] = [
+        "SIMULATION MODE: scenario values are computed; no live measurements or control commands are used."
+    ]
     if payload.model_version_id is not None:
         model_version, model, parameter_set = validated_cstr_configuration(
             session, context.organization_id, payload.model_version_id
@@ -652,9 +856,13 @@ def run_simulation(
     )
     outside_range = not configured_envelope.contains(inputs)
     if model_version is None:
-        warnings.append("UNVALIDATED_REFERENCE_MODEL: this what-if uses demonstrator defaults, not a validated plant model.")
+        warnings.append(
+            "UNVALIDATED_REFERENCE_MODEL: this what-if uses demonstrator defaults, not a validated plant model."
+        )
     if outside_range:
-        warnings.append("OUTSIDE VALIDATED MODEL RANGE: simulated extrapolation is illustrative and not predictive.")
+        warnings.append(
+            "OUTSIDE VALIDATED MODEL RANGE: simulated extrapolation is illustrative and not predictive."
+        )
     response = {
         "mode": "SIMULATION",
         "baseline": baseline,
@@ -669,11 +877,16 @@ def run_simulation(
         },
         "trajectory": trajectory,
         "constraint_violations": ["Outside validated model range."] if outside_range else [],
-        "model_validity": "UNVALIDATED_REFERENCE" if model_version is None else ("OUTSIDE_VALIDATED_MODEL_RANGE" if outside_range else "VALIDATED_MODEL_RANGE"),
+        "model_validity": "UNVALIDATED_REFERENCE"
+        if model_version is None
+        else ("OUTSIDE_VALIDATED_MODEL_RANGE" if outside_range else "VALIDATED_MODEL_RANGE"),
         "model_version_id": str(model_version.id) if model_version else None,
         "physics_parameter_set_id": str(parameter_set.id) if parameter_set else None,
         "operating_envelope": envelope,
-        "uncertainty": {"status": "UNAVAILABLE", "reason": "No scenario uncertainty estimator is configured"},
+        "uncertainty": {
+            "status": "UNAVAILABLE",
+            "reason": "No scenario uncertainty estimator is configured",
+        },
         "warnings": warnings,
         "source": "SIMULATED",
         "advisory": "Simulation only. No actual plant setting has been modified.",
@@ -754,7 +967,11 @@ def optimize(
         "model_version_id": str(model_version.id),
         "physics_parameter_set_id": str(parameter_set.id),
         "algorithm": "scipy.differential_evolution",
-        "objective": {"name": "maximize_yield_minus_energy", "weight": payload.energy_weight, "value": result.objective},
+        "objective": {
+            "name": "maximize_yield_minus_energy",
+            "weight": payload.energy_weight,
+            "value": result.objective,
+        },
         "bounds": {
             "temperature_k": [envelope.temperature_k_min, envelope.temperature_k_max],
             "pressure_pa": [envelope.pressure_pa_min, envelope.pressure_pa_max],
@@ -763,14 +980,21 @@ def optimize(
         },
         "baseline": baseline_metrics,
         "optimized": {**optimized_metrics, "variables": recommended},
-        "objective_improvement": result.objective - (result.baseline_yield - payload.energy_weight * (result.baseline_energy_w / envelope.max_energy_w)),
+        "objective_improvement": result.objective
+        - (
+            result.baseline_yield
+            - payload.energy_weight * (result.baseline_energy_w / envelope.max_energy_w)
+        ),
         "energy_impact_kw": (result.optimized_energy_w - result.baseline_energy_w) / 1000,
         "constraints": {
             "status": result.constraint_status,
             "hard_energy_limit_w": envelope.max_energy_w,
             "operating_envelope": model_version.operating_envelope,
         },
-        "uncertainty": {"status": "UNAVAILABLE", "reason": "No uncertainty estimator is registered for this operating point"},
+        "uncertainty": {
+            "status": "UNAVAILABLE",
+            "reason": "No uncertainty estimator is registered for this operating point",
+        },
         "advisory": result.advisory,
     }
     run = OptimizationRun(
@@ -797,19 +1021,27 @@ def optimize(
             "baseline": baseline_metrics,
             "scenario": optimized_metrics,
             "difference": {
-                "yield_percentage_points": optimized_metrics["yield_pct"] - baseline_metrics["yield_pct"],
-                "energy_kw": optimized_metrics["energy_proxy_kw"] - baseline_metrics["energy_proxy_kw"],
-                "temperature_c": optimized_metrics["temperature_c"] - baseline_metrics["temperature_c"],
-                "pressure_bar": optimized_metrics["pressure_bar"] - baseline_metrics["pressure_bar"],
-                "conversion_percentage_points": optimized_metrics["conversion_pct"] - baseline_metrics["conversion_pct"],
-                "selectivity_percentage_points": optimized_metrics["selectivity_pct"] - baseline_metrics["selectivity_pct"],
+                "yield_percentage_points": optimized_metrics["yield_pct"]
+                - baseline_metrics["yield_pct"],
+                "energy_kw": optimized_metrics["energy_proxy_kw"]
+                - baseline_metrics["energy_proxy_kw"],
+                "temperature_c": optimized_metrics["temperature_c"]
+                - baseline_metrics["temperature_c"],
+                "pressure_bar": optimized_metrics["pressure_bar"]
+                - baseline_metrics["pressure_bar"],
+                "conversion_percentage_points": optimized_metrics["conversion_pct"]
+                - baseline_metrics["conversion_pct"],
+                "selectivity_percentage_points": optimized_metrics["selectivity_pct"]
+                - baseline_metrics["selectivity_pct"],
             },
             "model_validity": "VALIDATED_MODEL_RANGE",
             "model_version_id": str(model_version.id),
             "physics_parameter_set_id": str(parameter_set.id),
             "constraints": response["constraints"],
             "uncertainty": response["uncertainty"],
-            "warnings": ["SIMULATION MODE: optimization output is a model scenario, not a plant command."],
+            "warnings": [
+                "SIMULATION MODE: optimization output is a model scenario, not a plant command."
+            ],
             "source": "SIMULATED",
         }
         simulation = Simulation(
@@ -840,7 +1072,11 @@ def optimize(
             model_version_id=model_version.id,
             baseline=baseline_metrics,
             proposed_change=recommended,
-            energy_impact={"change_kw": response["energy_impact_kw"], "baseline_kw": baseline_metrics["energy_proxy_kw"], "scenario_kw": optimized_metrics["energy_proxy_kw"]},
+            energy_impact={
+                "change_kw": response["energy_impact_kw"],
+                "baseline_kw": baseline_metrics["energy_proxy_kw"],
+                "scenario_kw": optimized_metrics["energy_proxy_kw"],
+            },
             uncertainty=response["uncertainty"],
             constraint_status=result.constraint_status,
             expires_at=datetime.now(UTC) + timedelta(days=7),
@@ -939,8 +1175,12 @@ def models(context: TenantDependency, session: SessionDependency) -> dict[str, A
                 "metrics": entry.metrics,
                 "features": entry.feature_schema,
                 "target": entry.target_schema,
-                "dataset_version_id": str(entry.dataset_version_id) if entry.dataset_version_id else None,
-                "physics_parameter_set_id": str(entry.physics_parameter_set_id) if entry.physics_parameter_set_id else None,
+                "dataset_version_id": str(entry.dataset_version_id)
+                if entry.dataset_version_id
+                else None,
+                "physics_parameter_set_id": str(entry.physics_parameter_set_id)
+                if entry.physics_parameter_set_id
+                else None,
                 "training_period": entry.training_period,
                 "validation_period": entry.validation_period,
                 "test_period": entry.test_period,
@@ -993,9 +1233,7 @@ def promote_model(
     if candidate is None:
         raise ApiError(404, "MODEL_NOT_FOUND", "Model was not found in this organization")
     if candidate.status != "STAGING":
-        raise ApiError(
-            422, "MODEL_NOT_APPROVABLE", "Only explicitly staged models may be promoted"
-        )
+        raise ApiError(422, "MODEL_NOT_APPROVABLE", "Only explicitly staged models may be promoted")
     for current in session.scalars(
         select(ModelVersion).where(
             ModelVersion.organization_id == context.organization_id,
@@ -1030,7 +1268,11 @@ def stage_model(
     if candidate is None:
         raise ApiError(404, "MODEL_NOT_FOUND", "Model was not found in this organization")
     if candidate.status != "VALIDATED":
-        raise ApiError(422, "MODEL_NOT_VALIDATED", "Only a model with an independent VALIDATED evaluation may be staged")
+        raise ApiError(
+            422,
+            "MODEL_NOT_VALIDATED",
+            "Only a model with an independent VALIDATED evaluation may be staged",
+        )
     candidate.status = "STAGING"
     append_audit(
         session,
@@ -1097,7 +1339,9 @@ def dashboard_payload(context: TenantContext, session: Session) -> dict[str, Any
             .where(
                 SensorReading.sensor_id == sensor.id,
                 SensorReading.organization_id == context.organization_id,
-                SensorReading.quality_status.in_((QualityStatusName.GOOD, QualityStatusName.SUSPECT)),
+                SensorReading.quality_status.in_(
+                    (QualityStatusName.GOOD, QualityStatusName.SUSPECT)
+                ),
             )
             .order_by(desc(SensorReading.timestamp))
         )
@@ -1146,23 +1390,53 @@ def dashboard_payload(context: TenantContext, session: Session) -> dict[str, Any
                 selected_temperature = physics_state.get("temperature_k")
             twin_body = {
                 "temperature": {
-                    "value": convert(float(selected_temperature), "K", "degC") if selected_temperature is not None else None,
+                    "value": convert(float(selected_temperature), "K", "degC")
+                    if selected_temperature is not None
+                    else None,
                     "unit": "degC",
                     "source": "MEASURED" if measured_temperature else "ESTIMATED",
                     "timestamp": stored.timestamp,
                     "quality_status": measured_temperature.get("quality_status", "GOOD"),
                 },
-                "conversion": {"value": physics_state.get("conversion", 0.0) * 100, "unit": "%", "source": "ESTIMATED", "timestamp": stored.timestamp, "quality_status": "GOOD"},
-                "yield": {"value": physics_state.get("yield", 0.0) * 100, "unit": "%", "source": "ESTIMATED", "timestamp": stored.timestamp, "quality_status": "GOOD"},
-                "selectivity": {"value": physics_state.get("selectivity", 0.0) * 100, "unit": "%", "source": "ESTIMATED", "timestamp": stored.timestamp, "quality_status": "GOOD"},
-                "heat_removal": {"value": physics_state.get("heat_removal_w", 0.0) / 1000, "unit": "kW", "source": "ESTIMATED", "timestamp": stored.timestamp, "quality_status": "GOOD"},
+                "conversion": {
+                    "value": physics_state.get("conversion", 0.0) * 100,
+                    "unit": "%",
+                    "source": "ESTIMATED",
+                    "timestamp": stored.timestamp,
+                    "quality_status": "GOOD",
+                },
+                "yield": {
+                    "value": physics_state.get("yield", 0.0) * 100,
+                    "unit": "%",
+                    "source": "ESTIMATED",
+                    "timestamp": stored.timestamp,
+                    "quality_status": "GOOD",
+                },
+                "selectivity": {
+                    "value": physics_state.get("selectivity", 0.0) * 100,
+                    "unit": "%",
+                    "source": "ESTIMATED",
+                    "timestamp": stored.timestamp,
+                    "quality_status": "GOOD",
+                },
+                "heat_removal": {
+                    "value": physics_state.get("heat_removal_w", 0.0) / 1000,
+                    "unit": "kW",
+                    "source": "ESTIMATED",
+                    "timestamp": stored.timestamp,
+                    "quality_status": "GOOD",
+                },
                 "divergence_temperature_k": stored.state.get("physics_residual_temperature_k"),
                 "prediction_status": stored.prediction_status,
                 "uncertainty": stored.uncertainty,
                 "data_quality": stored.data_quality,
                 "health_factors": stored.health_factors,
-                "model_version_id": str(stored.model_version_id) if stored.model_version_id else None,
-                "physics_parameter_set_id": str(stored.physics_parameter_set_id) if stored.physics_parameter_set_id else None,
+                "model_version_id": str(stored.model_version_id)
+                if stored.model_version_id
+                else None,
+                "physics_parameter_set_id": str(stored.physics_parameter_set_id)
+                if stored.physics_parameter_set_id
+                else None,
             }
             health_status = stored.health_status
         return {
@@ -1172,7 +1446,9 @@ def dashboard_payload(context: TenantContext, session: Session) -> dict[str, Any
             "measurements": latest,
             "twin": twin_body,
             "active_alerts": 0,
-            "safety_notice": "LIVE READ-ONLY MODE" if mode == "LIVE_READ_ONLY" else "HISTORICAL MODE; no control connection is available.",
+            "safety_notice": "LIVE READ-ONLY MODE"
+            if mode == "LIVE_READ_ONLY"
+            else "HISTORICAL MODE; no control connection is available.",
         }
     if mode == "NO_DATA":
         return {"plant_health": "NO_DATA", "source_mode": mode, "measurements": {}, "twin": None}
