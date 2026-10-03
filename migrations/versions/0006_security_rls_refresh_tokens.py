@@ -47,35 +47,45 @@ _TENANT_TABLES = (
 )
 
 
+def _is_postgresql() -> bool:
+    """Check if we're targeting PostgreSQL, compatible with offline mode."""
+    context = op.get_context()
+    if context.as_sql:
+        # In offline mode, we can't detect the dialect, so assume PostgreSQL
+        # The RLS statements will be included in the generated SQL
+        return True
+    bind = op.get_bind()
+    return bind.dialect.name == "postgresql"
+
+
 def upgrade() -> None:
     bind = op.get_bind()
-    Base.metadata.tables["refresh_tokens"].create(bind=bind, checkfirst=True)
-    if bind.dialect.name != "postgresql":
-        return
-    for table in _TENANT_TABLES:
-        op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
+    if not op.get_context().as_sql:
+        Base.metadata.tables["refresh_tokens"].create(bind=bind, checkfirst=True)
+    if _is_postgresql():
+        for table in _TENANT_TABLES:
+            op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
+            op.execute(
+                f"CREATE POLICY processtwin_tenant_isolation ON {table} "
+                "USING (organization_id = current_setting('app.current_organization_id', true)::uuid) "
+                "WITH CHECK (organization_id = current_setting('app.current_organization_id', true)::uuid)"
+            )
+        op.execute("ALTER TABLE organization_memberships ENABLE ROW LEVEL SECURITY")
         op.execute(
-            f"CREATE POLICY processtwin_tenant_isolation ON {table} "
-            "USING (organization_id = current_setting('app.current_organization_id', true)::uuid) "
-            "WITH CHECK (organization_id = current_setting('app.current_organization_id', true)::uuid)"
+            "CREATE POLICY processtwin_membership_self ON organization_memberships "
+            "USING (user_id = current_setting('app.current_user_id', true)::uuid) "
+            "WITH CHECK (user_id = current_setting('app.current_user_id', true)::uuid)"
         )
-    op.execute("ALTER TABLE organization_memberships ENABLE ROW LEVEL SECURITY")
-    op.execute(
-        "CREATE POLICY processtwin_membership_self ON organization_memberships "
-        "USING (user_id = current_setting('app.current_user_id', true)::uuid) "
-        "WITH CHECK (user_id = current_setting('app.current_user_id', true)::uuid)"
-    )
-    op.execute("ALTER TABLE refresh_tokens ENABLE ROW LEVEL SECURITY")
-    op.execute(
-        "CREATE POLICY processtwin_refresh_token_self ON refresh_tokens "
-        "USING (user_id = current_setting('app.current_user_id', true)::uuid) "
-        "WITH CHECK (user_id = current_setting('app.current_user_id', true)::uuid)"
-    )
+        op.execute("ALTER TABLE refresh_tokens ENABLE ROW LEVEL SECURITY")
+        op.execute(
+            "CREATE POLICY processtwin_refresh_token_self ON refresh_tokens "
+            "USING (user_id = current_setting('app.current_user_id', true)::uuid) "
+            "WITH CHECK (user_id = current_setting('app.current_user_id', true)::uuid)"
+        )
 
 
 def downgrade() -> None:
-    bind = op.get_bind()
-    if bind.dialect.name == "postgresql":
+    if _is_postgresql():
         for table in _TENANT_TABLES:
             op.execute(f"DROP POLICY IF EXISTS processtwin_tenant_isolation ON {table}")
             op.execute(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY")
@@ -85,4 +95,6 @@ def downgrade() -> None:
         ):
             op.execute(f"DROP POLICY IF EXISTS {policy} ON {table}")
             op.execute(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY")
-    Base.metadata.tables["refresh_tokens"].drop(bind=bind, checkfirst=True)
+    bind = op.get_bind()
+    if not op.get_context().as_sql:
+        Base.metadata.tables["refresh_tokens"].drop(bind=bind, checkfirst=True)

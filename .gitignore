@@ -42,3 +42,6 @@ Thumbs.db
 *.log
 
 .pytest_temp/
+
+# Downloaded public benchmark sources are reproducible caches, not repository data.
+data/public/

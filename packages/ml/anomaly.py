@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, TypeAlias, cast
+from typing import Any, cast
 
 import numpy as np
 from sklearn.ensemble import IsolationForest  # type: ignore[import-untyped]
 
-FloatArray: TypeAlias = np.ndarray[Any, np.dtype[np.float64]]
-BoolArray: TypeAlias = np.ndarray[Any, np.dtype[np.bool_]]
+type FloatArray = np.ndarray[Any, np.dtype[np.float64]]
+type BoolArray = np.ndarray[Any, np.dtype[np.bool_]]
 
 
 class PotentialAnomalyDetector:

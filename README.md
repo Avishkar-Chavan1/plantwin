@@ -53,7 +53,7 @@ See [the system architecture](docs/architecture/system.md), [CSTR equations](doc
 
 Historical CSV and optional Parquet imports, configurable tag mapping, SI normalization, data-quality reporting and exploration are documented in [the historical data import guide](docs/data-import.md). Imported datasets are user-supplied and are distinct from the simulator's synthetic demo data.
 
-Bounded CSTR parameter fitting, independent model evaluation, lifecycle gates, hybrid physics/ML comparisons and drift monitoring are documented in [the calibration and monitoring guide](docs/model-calibration.md). The framework has not yet been calibrated or validated against an industrial dataset.
+Bounded CSTR parameter fitting, independent model evaluation, lifecycle gates, hybrid physics/ML comparisons and drift monitoring are documented in [the calibration and monitoring guide](docs/model-calibration.md). A reproducible public Tennessee Eastman simulation-benchmark run, including time split, drift and extrapolation gates, is recorded in [the validation report](docs/validation/tennessee-eastman.md). It is not industrial plant validation.
 
 ## Development commands
 
@@ -64,6 +64,7 @@ Bounded CSTR parameter fitting, independent model evaluation, lifecycle gates, h
 | `make simulate` | Generate a short simulated run. |
 | `make train` | Train a versioned residual ML model using GOOD readings. |
 | `make evaluate` | Print held-out time-based model metrics. |
+| `make public-validation` | Download/cache the public Tennessee Eastman benchmark and regenerate its report. |
 | `make migrate` | Apply Alembic schema revisions. |
 
 ## Limitations and operating boundary

@@ -31,6 +31,9 @@ train:
 evaluate:
 	$(PYTHON) -m apps.worker.processtwin_worker.evaluate
 
+public-validation:
+	$(PYTHON) -m packages.benchmarks.tennessee_eastman
+
 migrate:
 	alembic upgrade head
 

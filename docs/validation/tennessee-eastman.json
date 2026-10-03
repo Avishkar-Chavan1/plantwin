@@ -1,0 +1,319 @@
+{
+  "calibration": {
+    "held_out_test": {
+      "all_observations_metrics": {
+        "bias": 0.002360943334364006,
+        "mae": 0.015020889953575815,
+        "mape": 0.012476159076221313,
+        "r2": 0.29436873665364616,
+        "rmse": 0.01860038833746737
+      },
+      "dataset_name": "nominal_calibration:held_out_test",
+      "deployment_disposition": "ABSTAIN_OUTSIDE_CALIBRATION_ENVELOPE",
+      "drift": {
+        "metrics": {
+          "XMEAS(9)_input": {
+            "current_count": 101.0,
+            "jensen_shannon_divergence": 0.029980702685660335,
+            "js_drift": false,
+            "ks_drift": false,
+            "ks_pvalue": 0.13384635823538002,
+            "ks_statistic": 0.1311301698731746,
+            "psi": 0.21181876564533111,
+            "psi_drift": true,
+            "reference_count": 299.0
+          },
+          "XMEAS(9)_target": {
+            "current_count": 101.0,
+            "jensen_shannon_divergence": 0.028704551096681068,
+            "js_drift": false,
+            "ks_drift": false,
+            "ks_pvalue": 0.15299420792178697,
+            "ks_statistic": 0.12778568826782344,
+            "psi": 0.19978945262736905,
+            "psi_drift": false,
+            "reference_count": 299.0
+          },
+          "prediction_error": {
+            "current_count": 101.0,
+            "jensen_shannon_divergence": 0.05062546425612901,
+            "js_drift": false,
+            "ks_drift": false,
+            "ks_pvalue": 0.011697310509766164,
+            "ks_statistic": 0.18159541706679028,
+            "psi": 0.24855267827886654,
+            "psi_drift": true,
+            "reference_count": 299.0
+          }
+        },
+        "reasons": [
+          "XMEAS(9)_input:PSI=0.2118,KS_p=0.1338,JS=0.02998",
+          "prediction_error:PSI=0.2486,KS_p=0.0117,JS=0.05063"
+        ],
+        "status": "MODEL_DRIFT_DETECTED"
+      },
+      "in_envelope_metrics": {
+        "bias": 0.003501002255140734,
+        "mae": 0.014038122938112033,
+        "mape": 0.011659965336597813,
+        "r2": 0.3494891502720838,
+        "rmse": 0.017392599407325328
+      },
+      "observation_count": 101,
+      "outside_envelope_count": 23,
+      "outside_envelope_fraction": 0.22772277227722773,
+      "source_sha256": "4c3c0b11eefacf93e5d2529e2866d7a625e37aa9153d0f95fae17a6c9e560deb"
+    },
+    "split": {
+      "total": 499,
+      "train_end": 299,
+      "validation_end": 398
+    },
+    "train": {
+      "all_observations_metrics": {
+        "bias": 1.8250729801463443e-14,
+        "mae": 0.010162475488243292,
+        "mape": 0.008440661419460656,
+        "r2": 0.41940363884801324,
+        "rmse": 0.013131309678801965
+      },
+      "dataset_name": "nominal_calibration:train",
+      "deployment_disposition": "IN_ENVELOPE_RESEARCH_ONLY",
+      "drift": {
+        "metrics": {
+          "XMEAS(9)_input": {
+            "current_count": 299.0,
+            "jensen_shannon_divergence": 0.0,
+            "js_drift": false,
+            "ks_drift": false,
+            "ks_pvalue": 1.0,
+            "ks_statistic": 0.0,
+            "psi": 0.0,
+            "psi_drift": false,
+            "reference_count": 299.0
+          },
+          "XMEAS(9)_target": {
+            "current_count": 299.0,
+            "jensen_shannon_divergence": 0.0,
+            "js_drift": false,
+            "ks_drift": false,
+            "ks_pvalue": 1.0,
+            "ks_statistic": 0.0,
+            "psi": 0.0,
+            "psi_drift": false,
+            "reference_count": 299.0
+          },
+          "prediction_error": {
+            "current_count": 299.0,
+            "jensen_shannon_divergence": 0.0,
+            "js_drift": false,
+            "ks_drift": false,
+            "ks_pvalue": 1.0,
+            "ks_statistic": 0.0,
+            "psi": 0.0,
+            "psi_drift": false,
+            "reference_count": 299.0
+          }
+        },
+        "reasons": [],
+        "status": "NO_DRIFT_DETECTED"
+      },
+      "in_envelope_metrics": {
+        "bias": 1.8250729801463443e-14,
+        "mae": 0.010162475488243292,
+        "mape": 0.008440661419460656,
+        "r2": 0.41940363884801324,
+        "rmse": 0.013131309678801965
+      },
+      "observation_count": 299,
+      "outside_envelope_count": 0,
+      "outside_envelope_fraction": 0.0,
+      "source_sha256": "4c3c0b11eefacf93e5d2529e2866d7a625e37aa9153d0f95fae17a6c9e560deb"
+    },
+    "validation": {
+      "all_observations_metrics": {
+        "bias": 8.603490986970566e-05,
+        "mae": 0.013469123736503738,
+        "mape": 0.011187128675970744,
+        "r2": 0.2079419426685578,
+        "rmse": 0.016725118681292353
+      },
+      "dataset_name": "nominal_calibration:validation",
+      "deployment_disposition": "ABSTAIN_OUTSIDE_CALIBRATION_ENVELOPE",
+      "drift": {
+        "metrics": {
+          "XMEAS(9)_input": {
+            "current_count": 99.0,
+            "jensen_shannon_divergence": 0.009018873504785908,
+            "js_drift": false,
+            "ks_drift": false,
+            "ks_pvalue": 0.9660578208984744,
+            "ks_statistic": 0.055065707239620315,
+            "psi": 0.04005007695692599,
+            "psi_drift": false,
+            "reference_count": 299.0
+          },
+          "XMEAS(9)_target": {
+            "current_count": 99.0,
+            "jensen_shannon_divergence": 0.010609476491367044,
+            "js_drift": false,
+            "ks_drift": false,
+            "ks_pvalue": 0.990718030058419,
+            "ks_statistic": 0.048309178743961345,
+            "psi": 0.037021079375407176,
+            "psi_drift": false,
+            "reference_count": 299.0
+          },
+          "prediction_error": {
+            "current_count": 99.0,
+            "jensen_shannon_divergence": 0.019285901166423765,
+            "js_drift": false,
+            "ks_drift": false,
+            "ks_pvalue": 0.3071723018370436,
+            "ks_statistic": 0.10938819634471814,
+            "psi": 0.19081503027699617,
+            "psi_drift": false,
+            "reference_count": 299.0
+          }
+        },
+        "reasons": [],
+        "status": "NO_DRIFT_DETECTED"
+      },
+      "in_envelope_metrics": {
+        "bias": 8.025632712785155e-05,
+        "mae": 0.013827266789129062,
+        "mape": 0.011484509289146507,
+        "r2": 0.2415520246178634,
+        "rmse": 0.01675139161579376
+      },
+      "observation_count": 99,
+      "outside_envelope_count": 22,
+      "outside_envelope_fraction": 0.2222222222222222,
+      "source_sha256": "4c3c0b11eefacf93e5d2529e2866d7a625e37aa9153d0f95fae17a6c9e560deb"
+    }
+  },
+  "fault_13_kinetics_drift": {
+    "all_observations_metrics": {
+      "bias": 0.004631612069402694,
+      "mae": 0.042181421263966866,
+      "mape": 0.035034318341904326,
+      "r2": -4.258166592148764,
+      "rmse": 0.05522275471333094
+    },
+    "dataset_name": "fault_13_kinetics_drift",
+    "deployment_disposition": "ABSTAIN_OUTSIDE_CALIBRATION_ENVELOPE",
+    "drift": {
+      "metrics": {
+        "XMEAS(9)_input": {
+          "current_count": 959.0,
+          "jensen_shannon_divergence": 0.023174190985936968,
+          "js_drift": false,
+          "ks_drift": false,
+          "ks_pvalue": 0.09167431274867882,
+          "ks_statistic": 0.08134518607384367,
+          "psi": 0.12877929649256412,
+          "psi_drift": false,
+          "reference_count": 299.0
+        },
+        "XMEAS(9)_target": {
+          "current_count": 959.0,
+          "jensen_shannon_divergence": 0.022432412445105195,
+          "js_drift": false,
+          "ks_drift": false,
+          "ks_pvalue": 0.10869601636142459,
+          "ks_statistic": 0.07904345733606288,
+          "psi": 0.12160611414472607,
+          "psi_drift": false,
+          "reference_count": 299.0
+        },
+        "prediction_error": {
+          "current_count": 959.0,
+          "jensen_shannon_divergence": 0.20959915193123985,
+          "js_drift": true,
+          "ks_drift": true,
+          "ks_pvalue": 1.0405090085048712e-18,
+          "ks_statistic": 0.30059182328303236,
+          "psi": 1.2239144534895474,
+          "psi_drift": true,
+          "reference_count": 299.0
+        }
+      },
+      "reasons": [
+        "prediction_error:PSI=1.224,KS_p=1.041e-18,JS=0.2096"
+      ],
+      "status": "MODEL_DRIFT_DETECTED"
+    },
+    "in_envelope_metrics": {
+      "bias": 0.00011819446759873613,
+      "mae": 0.012036696333828548,
+      "mape": 0.009997437910953373,
+      "r2": 0.30905848339324304,
+      "rmse": 0.015231063819503054
+    },
+    "observation_count": 959,
+    "outside_envelope_count": 792,
+    "outside_envelope_fraction": 0.8258602711157456,
+    "source_sha256": "2e34e0c427d6e41d77d6cae76550b7e95004f9f13bc093278ecf5c282a1c9f03"
+  },
+  "nominal_official_test": {
+    "all_observations_metrics": {
+      "bias": -9.804476428385334e-05,
+      "mae": 0.013362528913913426,
+      "mape": 0.011098349069838302,
+      "r2": 0.2762930799147787,
+      "rmse": 0.016886637787149078
+    },
+    "dataset_name": "nominal_official_test",
+    "deployment_disposition": "ABSTAIN_OUTSIDE_CALIBRATION_ENVELOPE",
+    "drift": {
+      "metrics": {
+        "XMEAS(9)_input": {
+          "current_count": 959.0,
+          "jensen_shannon_divergence": 0.0059522259443613125,
+          "js_drift": false,
+          "ks_drift": false,
+          "ks_pvalue": 0.5695100131860117,
+          "ks_statistic": 0.05110535291430246,
+          "psi": 0.039376701282418825,
+          "psi_drift": false,
+          "reference_count": 299.0
+        },
+        "XMEAS(9)_target": {
+          "current_count": 959.0,
+          "jensen_shannon_divergence": 0.0055319893574727825,
+          "js_drift": false,
+          "ks_drift": false,
+          "ks_pvalue": 0.6541409944815642,
+          "ks_statistic": 0.04776087130895129,
+          "psi": 0.03557291364886556,
+          "psi_drift": false,
+          "reference_count": 299.0
+        },
+        "prediction_error": {
+          "current_count": 959.0,
+          "jensen_shannon_divergence": 0.01987496864993165,
+          "js_drift": false,
+          "ks_drift": false,
+          "ks_pvalue": 0.030352516327536452,
+          "ks_statistic": 0.09493933549788836,
+          "psi": 0.1469981093547555,
+          "psi_drift": false,
+          "reference_count": 299.0
+        }
+      },
+      "reasons": [],
+      "status": "NO_DRIFT_DETECTED"
+    },
+    "in_envelope_metrics": {
+      "bias": 0.00015742232393573652,
+      "mae": 0.013213753762006411,
+      "mape": 0.010974811026344638,
+      "r2": 0.298631159860975,
+      "rmse": 0.016870475721454118
+    },
+    "observation_count": 959,
+    "outside_envelope_count": 303,
+    "outside_envelope_fraction": 0.3159541188738269,
+    "source_sha256": "57d56da4199e3d73582855d810be1d13d931386fd728bf1694798c7b0a03678c"
+  }
+}

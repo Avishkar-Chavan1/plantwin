@@ -10,15 +10,34 @@ from alembic import op
 from apps.api.processtwin_api.database import Base
 from sqlalchemy import JSON, Column, Float, String, inspect
 
+
 revision = "0002_historical_datasets"
 down_revision = "0001_initial_schema"
 branch_labels = None
 depends_on = None
 
 
-def upgrade() -> None:
+def _get_columns(table_name: str) -> set[str]:
+    """Get column names, compatible with offline mode."""
+    context = op.get_context()
+    if context.as_sql:
+        # In offline mode, assume columns don't exist (will be added)
+        return set()
     bind = op.get_bind()
-    columns = {column["name"] for column in inspect(bind).get_columns("sensor_readings")}
+    return {column["name"] for column in inspect(bind).get_columns(table_name)}
+
+
+def _table_exists(table_name: str) -> bool:
+    """Check if table exists, compatible with offline mode."""
+    context = op.get_context()
+    if context.as_sql:
+        return True
+    bind = op.get_bind()
+    return table_name in inspect(bind).get_table_names()
+
+
+def upgrade() -> None:
+    columns = _get_columns("sensor_readings")
     additions = {
         "original_value": Float(),
         "original_unit": String(32),
@@ -35,12 +54,12 @@ def upgrade() -> None:
                 )
             else:
                 op.add_column("sensor_readings", Column(name, column_type, nullable=True))
-    Base.metadata.create_all(bind=bind)
+    bind = op.get_bind()
+    if not op.get_context().as_sql:
+        Base.metadata.create_all(bind=bind)
 
 
 def downgrade() -> None:
-    bind = op.get_bind()
-    tables = set(inspect(bind).get_table_names())
     for table in (
         "dataset_observations",
         "tag_mappings",
@@ -49,9 +68,9 @@ def downgrade() -> None:
         "datasets",
         "data_sources",
     ):
-        if table in tables:
+        if _table_exists(table):
             op.drop_table(table)
-    columns = {column["name"] for column in inspect(bind).get_columns("sensor_readings")}
+    columns = _get_columns("sensor_readings")
     for name in (
         "quality_reasons",
         "normalized_unit",

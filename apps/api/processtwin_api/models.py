@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     DateTime,
     Enum,
@@ -764,3 +765,94 @@ class AuditLog(Base):
     )
     ip_address: Mapped[str | None] = mapped_column(String(64))
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class ImportJob(Timestamped, Base):
+    """Tracks chunked historical data import jobs for large datasets."""
+    __tablename__ = "import_jobs"
+    __table_args__ = (
+        Index("ix_import_jobs_organization_id", "organization_id"),
+        Index("ix_import_jobs_dataset_id", "dataset_id"),
+        Index("ix_import_jobs_status", "status"),
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    dataset_id: Mapped[UUID] = mapped_column(
+        ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False
+    )
+    data_source_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("data_sources.id", ondelete="SET NULL")
+    )
+    status: Mapped[str] = mapped_column(String(32), default="PENDING", nullable=False)
+    source_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    file_checksum_sha256: Mapped[str | None] = mapped_column(String(64))
+    total_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    total_rows: Mapped[int | None] = mapped_column(Integer)
+    processed_rows: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failed_rows: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    chunk_size: Mapped[int] = mapped_column(Integer, default=10000, nullable=False)
+    total_chunks: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    completed_chunks: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    mappings_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    timestamp_column: Mapped[str] = mapped_column(String(128), default="timestamp", nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ImportChunk(Timestamped, Base):
+    """Individual chunk within an import job for idempotent retry."""
+    __tablename__ = "import_chunks"
+    __table_args__ = (
+        UniqueConstraint("import_job_id", "chunk_index", name="uq_import_chunk_job_index"),
+        Index("ix_import_chunks_job_id", "import_job_id"),
+        Index("ix_import_chunks_status", "status"),
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    import_job_id: Mapped[UUID] = mapped_column(
+        ForeignKey("import_jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    start_row: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_row: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="PENDING", nullable=False)
+    object_path: Mapped[str | None] = mapped_column(String(512))
+    object_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    object_checksum_sha256: Mapped[str | None] = mapped_column(String(64))
+    rows_processed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    rows_failed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    quality_summary: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ObjectStorageArtifact(Timestamped, Base):
+    """Tracks files stored in object storage (MinIO/S3) for audit and deduplication."""
+    __tablename__ = "object_storage_artifacts"
+    __table_args__ = (
+        UniqueConstraint("bucket", "object_key", name="uq_object_bucket_key"),
+        Index("ix_object_artifacts_organization_id", "organization_id"),
+        Index("ix_object_artifacts_checksum", "checksum_sha256"),
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    bucket: Mapped[str] = mapped_column(String(128), nullable=False)
+    object_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    content_type: Mapped[str | None] = mapped_column(String(128))
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    etag: Mapped[str | None] = mapped_column(String(128))
+    version_id: Mapped[str | None] = mapped_column(String(128))
+    artifact_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    uploaded_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))

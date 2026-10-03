@@ -1,0 +1,86 @@
+# ProcessTwin Phase 0 audit
+
+**Date:** 2026-10-01  
+**Scope:** repository code, configuration, migrations, Docker/Compose, CI, tests, and user-facing documentation. This is a software implementation audit; it is not a plant, safety, cybersecurity, certification, or compliance assessment.
+
+## Executive assessment
+
+ProcessTwin is a substantive **advisory-only demonstrator** with useful foundations: an SI CSTR model, a synthetic simulator, FastAPI/SQLAlchemy API, tenant and role checks, JWT access/refresh tokens, audit records, mapped historical imports, read-only telemetry adapters, CSTR calibration/model lifecycle code, and a web dashboard. The public Tennessee Eastman report added in this workspace is reproducible benchmark evidence, not plant validation.
+
+It is not deployment-ready today. The mandatory engineering gate is red: lint, strict type checking, and the full integration test suite fail. The current Docker images are development-style and a production deployment package, release process, operational recovery procedure, supply-chain controls, and site-specific evidence are incomplete or absent. No code path should be connected to a PLC, DCS, SCADA system, or any other plant-control endpoint.
+
+## Evidence observed
+
+| Area | What is implemented | Assessment |
+| --- | --- | --- |
+| Advisory boundary | Connectors are framed as read-only acquisition; recommendations carry an advisory warning; no control-command endpoint is present. | Foundation present; regression tests must remain mandatory. |
+| Configuration and API safety | `Settings` validates environment, JWT secret length, explicit CORS origins, production PostgreSQL, production metrics token, and rejects demo credentials in production. Request IDs, structured JSON logging, request limits, CORS, common security headers, `/health`, `/ready`, and protected `/metrics` are implemented. | Partial. OIDC, shared rate limiting, separate liveness semantics, and graceful resource shutdown are absent. |
+| Identity and tenancy | JWT access/refresh rotation, logout revocation records, memberships/roles, app-level organization filtering, and a PostgreSQL RLS migration exist. | Partial. No OIDC/SSO, password-policy/admin provisioning flow, or PostgreSQL RLS integration proof. |
+| Database | Alembic migrations through `0006_security_rls_refresh_tokens`, SQLAlchemy pooling, `pool_pre_ping`, and tenant indexes/models exist. | Partial. No tested upgrade/downgrade matrix against PostgreSQL/Timescale, retention/compression policy, or backup/restore procedure. |
+| Connectivity | MQTT and OPC UA adapters and a gateway exist with source health handling; historical CSV/Parquet interfaces are defined. | Partial. No durable store-and-forward, production credential/certificate operations, or broker/OPC-UA container integration tests. |
+| Modeling | CSTR calibration, chronological residual ML, drift screening, lifecycle gates, operating envelopes, and the public TEP one-step forecast report exist. | Partial. Physics is not composable unit operations; PFR is minimal; heat exchanger, flash/distillation, flowsheet, uncertainty calibration, and site validation are absent. |
+| Workflow/safety | Recommendations have expiry, review/accept/reject records, and audit entries; bad data can prevent prediction/recommendation paths. | Partial. No ISA-18.2-style alarm lifecycle, shelve/acknowledge/escalation/flood metrics, or complete fail-safe contract coverage. |
+| Web/UI | Dashboard, live-source, and historical-exploration components exist. | Partial. No complete model-health, alarm, recommendation-review, or role-aware operational workflow. |
+| Delivery | Compose declares TimescaleDB, Redis, MinIO, MLflow, Prometheus, Grafana, API, web, and simulator. A small GitHub Actions workflow exists. | Partial. Images run as root, are single stage, do not use a read-only filesystem, and are not locked down for production. No Kubernetes/Helm, TLS configuration, operations runbooks, or release assets. |
+| Security assurance | Security policy and an application-level append-only audit helper exist. | Partial. No STRIDE threat model, OWASP/IEC control mapping, dependency/image/secret scanning, SBOM, or audit-immutability database test. |
+
+## Baseline verification (2026-10-01)
+
+The brief requires `make lint`, `make typecheck`, `make test`, and `docker compose build` at every phase gate. On this Windows host, `make` is not installed, so the equivalent Python commands were run where possible. These results are blockers, not waived checks.
+
+| Required gate | Result | Evidence |
+| --- | --- | --- |
+| `make lint` | Blocked locally: `make` unavailable. Equivalent Ruff command **failed**. | `ruff check apps packages connectors tests` reports 3 `UP040` violations in `packages/ml/anomaly.py` and `packages/ml/pipeline.py`. |
+| `make typecheck` | Blocked locally: `make` unavailable. Equivalent mypy command **failed**. | `mypy apps packages connectors` reports 98 errors across API workflows, realtime code, OPC UA typing, CSTR calibration, and missing optional `pyarrow` typing/dependency handling. |
+| `make test` | **Failed**. | Full pytest: 57 passed, 11 failed, 1 skipped. The focused API integration module: 1 passed, 4 failed. Freshly issued access tokens are rejected with 401 in authenticated requests; later logins also hit the process-global in-memory login rate limit (429). |
+| `docker compose build` | Blocked by local Docker permissions; not a successful build. | Docker cannot read `C:\Users\chava\.docker\config.json` or create the local Buildx instances directory. |
+| Benchmark pipeline | **Passed**. | `tests/benchmarks/test_tennessee_eastman.py`: 2 passed; Ruff and strict mypy checks for the benchmark package passed. The generated report is `docs/validation/tennessee-eastman.md`. |
+
+The test and type failures must be resolved before Phase 1 implementation starts. The Docker build needs a host where Docker has usable user-config/buildx permissions; that is an environment prerequisite, not a justification to skip image validation.
+
+## Prioritized gaps
+
+### P0 — release blockers and safety boundaries
+
+1. Restore a green engineering gate: fix the 3 Ruff issues, 98 strict-mypy errors, and the authentication/rate-limiter integration regressions; add deterministic tests that reproduce and prevent the token rejection.
+2. Make the production/development configuration paths executable and tested. The production Compose overlay currently inherits development Compose defaults; startup should remain fail-closed, but documented production manifests must not depend on demo service credentials or `latest` tags.
+3. Add explicit regression tests proving that every available connector and gateway only performs reads/subscribes and cannot issue a plant-control write, method call, or command.
+4. Establish a supported developer command runner on Windows (for example, documented PowerShell equivalents) so the required quality gates are executable consistently.
+5. Do not deploy until a privileged build host completes a clean `docker compose build` and the container runtime behavior is tested.
+
+### P1 — deployment and security hardening
+
+1. Add OIDC/OAuth2 Authorization Code + PKCE support, issuer/JWKS validation, user/membership mapping, and tests; retain local JWT only as an explicit development option.
+2. Define password creation/reset policy, password strength/compromise checks, account lifecycle, and shared rate limiting (Redis or ingress/WAF). The current limiter is per-process and causes test coupling.
+3. Convert API, worker, simulator, and web images to pinned, multi-stage, non-root production images; apply read-only root filesystems where the workload permits writable mounts.
+4. Add PostgreSQL/Timescale retention/compression and migration tests, backup/restore scripts, restore verification, and secret-injection/TLS deployment configuration.
+5. Validate PostgreSQL RLS with a real Postgres integration environment, including direct cross-tenant attempts. Application-level filters alone are not a sufficient defense-in-depth claim.
+
+### P2 — completeness, scale, and assurance
+
+1. Expand CI/CD: coverage gate, Compose integration environment, CodeQL, dependency/secret/image scans, SBOM, Dependabot, provenance/release workflow, changelog, and versioning policy.
+2. Complete industrial operations: durable gateway buffering, reconnect/backoff verification, OPC UA/MQTT integration containers, historian adapter contract examples, certificate/credential rotation, and ingestion-lag monitoring.
+3. Implement composable unit operations, heat exchanger, flash/distillation, a flowsheet, uncertainty calibration, and documented validation targets. Keep the current public TEP result marked as simulation-benchmark-only.
+4. Add alarm lifecycle/flood management and operational UI; provide Grafana dashboards, alerts, on-prem/air-gapped guidance, and runbooks.
+5. Complete security/compliance preparation with an honest threat model and control-status mapping. Do not call this certified, IEC 62443 compliant, SOC 2 compliant, or plant validated without external evidence.
+
+## Phased execution plan
+
+The following order keeps the advisory boundary intact and prevents later work from being built on a failing baseline. Each implementation phase ends only after lint, strict typing, tests, and image build pass on a capable host.
+
+1. **Phase 0 — audit (this change):** record the current facts, blockers, implementation sequence, and external-action checklist. No operational behavior changed.
+2. **Baseline remediation gate:** resolve P0 verification failures first, add regression tests, and capture a clean baseline. This is required before Phase 1 because the pasted brief forbids proceeding with a failing phase gate.
+3. **Phase 1 — production hardening:** configuration/identity boundary, health/shutdown, database operations, hardened container images, deployment/TLS artifacts. Do not add OIDC until the required identity-provider configuration contract and local dev fallback are designed.
+4. **Phase 2 — CI/CD and supply chain:** make the Phase 1 gate enforceable in CI before increasing connector or modeling scope.
+5. **Phase 3 — read-only connectivity:** integration-test the gateway against disposable MQTT/OPC UA services. Reject every control-capable configuration and verify no writes are attempted.
+6. **Phase 4 — modeling:** introduce unit-operation abstractions and publish only executed, reproducible validation reports. Keep public simulations and customer/plant evidence distinct.
+7. **Phase 5 — alarms, workflow, and explainability:** make the safe default `NO_RECOMMENDATION` when data/model quality is insufficient; retain human review and auditability.
+8. **Phases 6–8 — assurance, operations, and product:** add threat-model/control evidence, operational runbooks/dashboards/load-test results, then polish the UI and clean-clone deployment experience.
+
+## Non-software evidence boundary
+
+The items requiring customer authorization, a qualified security assessor, process engineers, or an operated deployment are tracked in [ROADMAP_EXTERNAL.md](ROADMAP_EXTERNAL.md). Their absence is a known limitation, not a claim that software can substitute for them.
+
+## Current workspace note
+
+This audit preserves existing uncommitted benchmark-pipeline changes (`packages/benchmarks`, `tests/benchmarks`, and `docs/validation`) rather than resetting or overwriting them. They are included in the observed repository state but should be committed separately after the baseline gate is green.

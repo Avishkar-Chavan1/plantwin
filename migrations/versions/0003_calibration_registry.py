@@ -10,15 +10,33 @@ from alembic import op
 from apps.api.processtwin_api.database import Base
 from sqlalchemy import JSON, Column, ForeignKey, String, Uuid, inspect
 
+
 revision = "0003_calibration_registry"
 down_revision = "0002_historical_datasets"
 branch_labels = None
 depends_on = None
 
 
-def upgrade() -> None:
+def _get_columns(table_name: str) -> set[str]:
+    """Get column names, compatible with offline mode."""
+    context = op.get_context()
+    if context.as_sql:
+        return set()
     bind = op.get_bind()
-    columns = {column["name"] for column in inspect(bind).get_columns("model_versions")}
+    return {column["name"] for column in inspect(bind).get_columns(table_name)}
+
+
+def _table_exists(table_name: str) -> bool:
+    """Check if table exists, compatible with offline mode."""
+    context = op.get_context()
+    if context.as_sql:
+        return True
+    bind = op.get_bind()
+    return table_name in inspect(bind).get_table_names()
+
+
+def upgrade() -> None:
+    columns = _get_columns("model_versions")
     additions = {
         "training_period": JSON(),
         "validation_period": JSON(),
@@ -50,29 +68,27 @@ def upgrade() -> None:
                     "dataset_version_id": "dataset_versions.id",
                     "physics_parameter_set_id": "physics_parameter_sets.id",
                 }
-                foreign_keys = (
-                    [ForeignKey(references[name], ondelete="SET NULL")]
-                    if name in references
-                    else []
-                )
+                foreign_keys = []
+                if name in references and not op.get_context().as_sql:
+                    foreign_keys = [ForeignKey(references[name], ondelete="SET NULL")]
                 op.add_column(
                     "model_versions", Column(name, column_type, *foreign_keys, nullable=True)
                 )
-    Base.metadata.create_all(bind=bind)
+    bind = op.get_bind()
+    if not op.get_context().as_sql:
+        Base.metadata.create_all(bind=bind)
 
 
 def downgrade() -> None:
-    bind = op.get_bind()
-    tables = set(inspect(bind).get_table_names())
     for table in (
         "model_drift_events",
         "model_evaluations",
         "calibration_runs",
         "physics_parameter_sets",
     ):
-        if table in tables:
+        if _table_exists(table):
             op.drop_table(table)
-    columns = {column["name"] for column in inspect(bind).get_columns("model_versions")}
+    columns = _get_columns("model_versions")
     for name in (
         "physics_parameter_set_id",
         "dataset_version_id",

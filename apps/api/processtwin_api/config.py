@@ -50,6 +50,11 @@ class Settings:
     mlflow_tracking_uri: str | None
     demo_email: str | None
     demo_password: str | None
+    minio_endpoint: str | None
+    minio_access_key: str | None
+    minio_secret_key: str | None
+    minio_bucket: str | None
+    minio_secure: bool
 
     @property
     def is_production(self) -> bool:
@@ -149,6 +154,11 @@ class Settings:
             mlflow_tracking_uri=os.getenv("MLFLOW_TRACKING_URI") or None,
             demo_email=demo_email,
             demo_password=demo_password,
+            minio_endpoint=os.getenv("MINIO_ENDPOINT") or None,
+            minio_access_key=os.getenv("MINIO_ACCESS_KEY") or None,
+            minio_secret_key=os.getenv("MINIO_SECRET_KEY") or None,
+            minio_bucket=os.getenv("MINIO_BUCKET") or None,
+            minio_secure=os.getenv("MINIO_SECURE", "true").lower() == "true",
         )
 
 

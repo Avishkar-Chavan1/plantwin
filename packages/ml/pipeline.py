@@ -5,12 +5,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, TypeAlias, cast
+from typing import Any, Protocol, cast
 
 import joblib  # type: ignore[import-untyped]
 import numpy as np
 
-FloatArray: TypeAlias = np.ndarray[Any, np.dtype[np.float64]]
+type FloatArray = np.ndarray[Any, np.dtype[np.float64]]
 
 try:  # A fresh declared environment uses scikit-learn; constrained local environments retain a real fallback.
     from sklearn.ensemble import (  # type: ignore[import-untyped]
@@ -45,7 +45,7 @@ class RidgeResidualRegressor:
     def fit(self, features: FloatArray, target: FloatArray) -> RidgeResidualRegressor:
         design = cast(FloatArray, np.column_stack((np.ones(len(features)), features)))
         penalty = np.eye(design.shape[1]) * self.regularization
-        penalty[0, 0] = 0.0
+        penalty[0, 0] = 0.0  # type: ignore[index]
         solution = cast(FloatArray, np.linalg.solve(design.T @ design + penalty, design.T @ target))
         self.intercept = float(solution[0])
         self.coefficients = solution[1:]
@@ -228,7 +228,7 @@ def _select_residual_estimator(
     scored: list[tuple[float, str, ResidualEstimator]] = []
     for candidate_name in candidate_names:
         estimator = _new_estimator(candidate_name)
-        estimator.fit(features[train], residual[train])
+        estimator.fit(features[train], residual[train])  # type: ignore[index]
         prediction = baseline[validation] + estimator.predict(features[validation])
         scored.append((metrics(actual[validation], prediction).mae, candidate_name, estimator))
     _, selected_name, selected = min(scored, key=lambda item: item[0])
@@ -268,7 +268,7 @@ def train_residual_model(
         train=train,
         validation=validation,
     )
-    training_error = residual[train] - estimator.predict(matrix[train])
+    training_error = residual[train] - estimator.predict(matrix[train])  # type: ignore[index]
     model = HybridResidualModel(
         tuple(feature_names), estimator, float(np.std(training_error, ddof=1)), selected_algorithm
     )

@@ -57,3 +57,4 @@ python_version = "3.12"
 strict = true
 warn_unused_ignores = true
 exclude = ["migrations"]
+enable_incomplete_feature = ["NewGenericSyntax"]

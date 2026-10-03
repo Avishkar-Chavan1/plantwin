@@ -27,11 +27,31 @@ branch_labels = None
 depends_on = None
 
 
-def _add_columns(table: str, additions: dict[str, Column]) -> None:
+def _get_columns(table_name: str) -> set[str]:
+    """Get column names, compatible with offline mode."""
+    context = op.get_context()
+    if context.as_sql:
+        return set()
     bind = op.get_bind()
-    present = {column["name"] for column in inspect(bind).get_columns(table)}
+    return {column["name"] for column in inspect(bind).get_columns(table_name)}
+
+
+def _table_exists(table_name: str) -> bool:
+    """Check if table exists, compatible with offline mode."""
+    context = op.get_context()
+    if context.as_sql:
+        return True
+    bind = op.get_bind()
+    return table_name in inspect(bind).get_table_names()
+
+
+def _add_columns(table: str, additions: dict[str, Column]) -> None:
+    present = _get_columns(table)
     for name, column in additions.items():
         if name not in present:
+            if op.get_context().as_sql and column.foreign_keys:
+                # SQLite doesn't support adding FK constraints via ALTER TABLE
+                column = Column(name, column.type, nullable=column.nullable, server_default=column.server_default)
             op.add_column(table, column)
 
 
@@ -147,16 +167,16 @@ def upgrade() -> None:
             "expires_at": Column("expires_at", DateTime(timezone=True)),
         },
     )
-    Base.metadata.create_all(bind=op.get_bind())
-    # Existing open demo recommendations are retained as generated, advisory records.
-    op.execute("UPDATE recommendations SET status = 'GENERATED' WHERE status = 'OPEN'")
+    bind = op.get_bind()
+    if not op.get_context().as_sql:
+        Base.metadata.create_all(bind=bind)
+        # Existing open demo recommendations are retained as generated, advisory records.
+        op.execute("UPDATE recommendations SET status = 'GENERATED' WHERE status = 'OPEN'")
 
 
 def downgrade() -> None:
-    bind = op.get_bind()
-    tables = set(inspect(bind).get_table_names())
     for table in ("potential_anomalies", "recommendation_reviews", "source_tag_mappings"):
-        if table in tables:
+        if _table_exists(table):
             op.drop_table(table)
     columns_to_drop = {
         "recommendations": (
@@ -209,7 +229,7 @@ def downgrade() -> None:
         ),
     }
     for table, names in columns_to_drop.items():
-        columns = {column["name"] for column in inspect(bind).get_columns(table)}
+        columns = _get_columns(table)
         for name in names:
             if name in columns:
                 op.drop_column(table, name)
