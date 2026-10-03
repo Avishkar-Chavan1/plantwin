@@ -73,7 +73,7 @@ class TEPDataset:
 
     @property
     def elapsed_seconds(self) -> np.ndarray:
-        return np.arange(self.sample_count, dtype=float) * self.sampling_interval_s
+        return np.arange(self.sample_count, dtype=np.float64) * self.sampling_interval_s  # type: ignore[return-value]
 
     @property
     def variable_names(self) -> tuple[str, ...]:
@@ -225,13 +225,13 @@ def _read_tep_matrix(raw: bytes) -> np.ndarray:
     if not rows or len({len(row) for row in rows}) != 1:
         raise ValueError("TEP source has empty or ragged numeric rows")
     matrix = np.asarray(rows, dtype=float)
-    if matrix.shape[1] == TEP_VARIABLE_COUNT:
+    if matrix.shape[1] == TEP_VARIABLE_COUNT:  # type: ignore[attr-defined]
         normalized = matrix
-    elif matrix.shape[0] == TEP_VARIABLE_COUNT:
-        normalized = matrix.T
+    elif matrix.shape[0] == TEP_VARIABLE_COUNT:  # type: ignore[attr-defined]
+        normalized = matrix.T  # type: ignore[attr-defined]
     else:
         raise ValueError(
-            f"TEP source needs a dimension of {TEP_VARIABLE_COUNT}; got {matrix.shape}"
+            f"TEP source needs a dimension of {TEP_VARIABLE_COUNT}; got {matrix.shape}"  # type: ignore[attr-defined]
         )
     if not np.isfinite(normalized).all():
         raise ValueError("TEP source contains non-finite values")
@@ -306,8 +306,8 @@ def _fit_ridge(
     standardized_target = (target - target_mean) / target_scale
     penalty = np.eye(TEP_VARIABLE_COUNT) * ridge_alpha
     coefficients = np.linalg.solve(
-        standardized_features.T @ standardized_features + penalty,
-        standardized_features.T @ standardized_target,
+        standardized_features.T @ standardized_features + penalty,  # type: ignore[attr-defined]
+        standardized_features.T @ standardized_target,  # type: ignore[attr-defined]
     )
     return TEPSurrogate(
         feature_mean=feature_mean,

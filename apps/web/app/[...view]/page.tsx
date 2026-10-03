@@ -1,5 +1,6 @@
 import { ProcessTwinConsole } from "../../components/process-twin-console";
 
-export default function ProductView({ params }: { params: { view: string[] } }) {
-  return <ProcessTwinConsole initialView={params.view[0] ?? "dashboard"} />;
+export default async function ProductView({ params }: { params: Promise<{ view: string[] }> }) {
+  const resolvedParams = await params;
+  return <ProcessTwinConsole initialView={resolvedParams.view[0] ?? "dashboard"} />;
 }

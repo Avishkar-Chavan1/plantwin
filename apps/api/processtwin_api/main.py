@@ -6,6 +6,7 @@ import hmac
 import io
 import logging
 import re
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from time import perf_counter
@@ -69,7 +70,7 @@ from .models import (
 )
 from .observability import configure_logging
 from .quality import DataQualityService
-from .rate_limit import FixedWindowRateLimiter
+from .rate_limit import RATE_LIMITER
 from .time_utils import as_utc
 from .workflow_api import router as workflow_router
 
@@ -79,7 +80,6 @@ REQUESTS = Counter(
 )
 LATENCY = Histogram("processtwin_api_request_seconds", "API request duration", ["path"])
 INGESTED = Counter("processtwin_sensor_readings_total", "Sensor readings persisted", ["quality"])
-RATE_LIMITER = FixedWindowRateLimiter()
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
 
 
@@ -89,40 +89,45 @@ class ApiError(HTTPException):
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
-    settings = get_settings()
-    configure_logging(settings.log_level)
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    configure_logging(get_settings().log_level)
     # Migration is preferred in development and mandatory in production.
-    if settings.auto_create_schema:
+    if get_settings().auto_create_schema:
         Base.metadata.create_all(bind=engine)
     yield
 
 
-settings = get_settings()
-app = FastAPI(
-    title="ProcessTwin API",
-    version="0.1.0",
-    lifespan=lifespan,
-    docs_url=None if settings.is_production else "/docs",
-    redoc_url=None if settings.is_production else "/redoc",
-)
-app.include_router(datasets_router)
-app.include_router(live_router)
-app.include_router(modeling_router)
-app.include_router(workflow_router)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Organization-ID", "X-Request-ID"],
-    expose_headers=["X-Request-ID", "Retry-After"],
-    max_age=600,
-)
+def create_app() -> FastAPI:
+    """Create the FastAPI application with current get_settings()."""
+    app = FastAPI(
+        title="ProcessTwin API",
+        version="0.1.0",
+        lifespan=lifespan,
+        docs_url=None if get_settings().is_production else "/docs",
+        redoc_url=None if get_settings().is_production else "/redoc",
+    )
+    app.include_router(datasets_router)
+    app.include_router(live_router)
+    app.include_router(modeling_router)
+    app.include_router(workflow_router)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=get_settings().cors_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-Organization-ID", "X-Request-ID"],
+        expose_headers=["X-Request-ID", "Retry-After"],
+        max_age=600,
+    )
+    return app
+
+
+app = create_app()
 
 
 @app.middleware("http")
 async def request_context(request: Request, call_next: Any) -> Response:
+    runtime_settings = get_settings()
     supplied_request_id = request.headers.get("X-Request-ID", "")
     request_id = (
         supplied_request_id if _REQUEST_ID_RE.fullmatch(supplied_request_id) else uuid4().hex
@@ -130,14 +135,14 @@ async def request_context(request: Request, call_next: Any) -> Response:
     if request.method != "OPTIONS" and request.url.path not in {"/health", "/ready", "/metrics"}:
         client = request.client.host if request.client else "unknown"
         limit = (
-            settings.login_rate_limit_requests
+            runtime_settings.login_rate_limit_requests
             if request.url.path == "/api/v1/auth/login"
-            else settings.rate_limit_requests
+            else runtime_settings.rate_limit_requests
         )
         allowed, retry_after = RATE_LIMITER.allow(
             f"{client}:{request.url.path}",
             limit=limit,
-            window_seconds=settings.rate_limit_window_seconds,
+            window_seconds=runtime_settings.rate_limit_window_seconds,
         )
         if not allowed:
             response = JSONResponse(
@@ -155,7 +160,7 @@ async def request_context(request: Request, call_next: Any) -> Response:
     content_length = request.headers.get("content-length")
     if content_length is not None:
         try:
-            too_large = int(content_length) > settings.max_request_bytes
+            too_large = int(content_length) > runtime_settings.max_request_bytes
         except ValueError:
             too_large = True
         if too_large:
@@ -196,7 +201,7 @@ async def request_context(request: Request, call_next: Any) -> Response:
         "default-src 'none'; base-uri 'none'; frame-ancestors 'none'"
     )
     response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
-    if settings.is_production:
+    if runtime_settings.is_production:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     REQUESTS.labels(request.method, request.url.path, str(response.status_code)).inc()
     logger.info(
@@ -256,7 +261,7 @@ def ready() -> dict[str, str]:
 
 @app.get("/metrics", include_in_schema=False)
 def metrics(request: Request) -> Response:
-    configured_token = settings.metrics_token
+    configured_token = get_settings().metrics_token
     if configured_token:
         supplied = request.headers.get("Authorization", "").removeprefix("Bearer ")
         if not hmac.compare_digest(supplied, configured_token):
@@ -290,7 +295,7 @@ def login(payload: LoginRequest, request: Request, session: SessionDependency) -
             status.HTTP_403_FORBIDDEN, "NO_ORGANIZATION_ACCESS", "User has no organization"
         )
     refresh_token_id = uuid4()
-    refresh_expiry = datetime.now(UTC) + timedelta(days=settings.refresh_token_expire_days)
+    refresh_expiry = datetime.now(UTC) + timedelta(days=get_settings().refresh_token_expire_days)
     session.add(RefreshToken(id=refresh_token_id, user_id=user.id, expires_at=refresh_expiry))
     for membership in memberships:
         set_tenant_context(session, str(membership.organization_id))
@@ -305,12 +310,12 @@ def login(payload: LoginRequest, request: Request, session: SessionDependency) -
     session.commit()
     return {
         "access_token": create_token(
-            user.id, "access", timedelta(minutes=settings.access_token_expire_minutes)
+            user.id, "access", timedelta(minutes=get_settings().access_token_expire_minutes)
         ),
         "refresh_token": create_token(
             user.id,
             "refresh",
-            timedelta(days=settings.refresh_token_expire_days),
+            timedelta(days=get_settings().refresh_token_expire_days),
             token_id=refresh_token_id,
         ),
         "token_type": "bearer",
@@ -365,7 +370,7 @@ def refresh(payload: RefreshRequest, session: SessionDependency) -> dict[str, st
             status.HTTP_403_FORBIDDEN, "NO_ORGANIZATION_ACCESS", "User has no organization"
         )
     replacement_id = uuid4()
-    expires_at = datetime.now(UTC) + timedelta(days=settings.refresh_token_expire_days)
+    expires_at = datetime.now(UTC) + timedelta(days=get_settings().refresh_token_expire_days)
     stored_token.revoked_at = datetime.now(UTC)
     stored_token.replaced_by_id = replacement_id
     session.add(RefreshToken(id=replacement_id, user_id=user.id, expires_at=expires_at))
@@ -380,12 +385,12 @@ def refresh(payload: RefreshRequest, session: SessionDependency) -> dict[str, st
     session.commit()
     return {
         "access_token": create_token(
-            user.id, "access", timedelta(minutes=settings.access_token_expire_minutes)
+            user.id, "access", timedelta(minutes=get_settings().access_token_expire_minutes)
         ),
         "refresh_token": create_token(
             user.id,
             "refresh",
-            timedelta(days=settings.refresh_token_expire_days),
+            timedelta(days=get_settings().refresh_token_expire_days),
             token_id=replacement_id,
         ),
         "token_type": "bearer",
@@ -662,11 +667,10 @@ async def ingest_csv(
     session: SessionDependency,
     request: Request,
 ) -> dict[str, Any]:
-    settings = get_settings()
     if not file.filename or not file.filename.lower().endswith(".csv"):
         raise ApiError(422, "INVALID_FILE_TYPE", "Only .csv files are accepted")
-    raw = await file.read(settings.max_upload_bytes + 1)
-    if len(raw) > settings.max_upload_bytes:
+    raw = await file.read(get_settings().max_upload_bytes + 1)
+    if len(raw) > get_settings().max_upload_bytes:
         raise ApiError(413, "FILE_TOO_LARGE", "CSV exceeds configured size limit")
     try:
         rows = list(csv.DictReader(io.StringIO(raw.decode("utf-8"))))
@@ -680,10 +684,20 @@ async def ingest_csv(
     accepted: list[dict[str, Any]] = []
     for index, row in enumerate(rows, start=2):
         try:
-            accepted.append(ingest_one(session, context, ReadingRequest(**row), source="CSV"))
+            reading_request = ReadingRequest(
+                sensor_id=UUID(row["sensor_id"]),
+                timestamp=datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00")),
+                value=float(row["value"]),
+                unit=row["unit"],
+            )
+            accepted.append(ingest_one(session, context, reading_request, source="CSV"))
         except (ValueError, ApiError) as exc:
             session.rollback()
-            message = exc.detail["message"] if isinstance(exc, ApiError) else str(exc)
+            if isinstance(exc, ApiError):
+                detail = exc.detail
+                message = detail["message"] if isinstance(detail, dict) else str(detail)  # type: ignore[index]
+            else:
+                message = str(exc)
             raise ApiError(422, "INVALID_CSV_ROW", f"Row {index}: {message}") from exc
     append_audit(
         session,
@@ -868,12 +882,12 @@ def run_simulation(
         "baseline": baseline,
         "scenario": final,
         "difference": {
-            "yield_percentage_points": final["yield_pct"] - baseline["yield_pct"],
-            "energy_kw": final["energy_proxy_kw"] - baseline["energy_proxy_kw"],
-            "temperature_c": final["temperature_c"] - baseline["temperature_c"],
-            "pressure_bar": final["pressure_bar"] - baseline["pressure_bar"],
-            "conversion_percentage_points": final["conversion_pct"] - baseline["conversion_pct"],
-            "selectivity_percentage_points": final["selectivity_pct"] - baseline["selectivity_pct"],
+            "yield_percentage_points": final["yield_pct"] - baseline["yield_pct"],  # type: ignore[operator]
+            "energy_kw": final["energy_proxy_kw"] - baseline["energy_proxy_kw"],  # type: ignore[operator]
+            "temperature_c": final["temperature_c"] - baseline["temperature_c"],  # type: ignore[operator]
+            "pressure_bar": final["pressure_bar"] - baseline["pressure_bar"],  # type: ignore[operator]
+            "conversion_percentage_points": final["conversion_pct"] - baseline["conversion_pct"],  # type: ignore[operator]
+            "selectivity_percentage_points": final["selectivity_pct"] - baseline["selectivity_pct"],  # type: ignore[operator]
         },
         "trajectory": trajectory,
         "constraint_violations": ["Outside validated model range."] if outside_range else [],
@@ -1021,18 +1035,12 @@ def optimize(
             "baseline": baseline_metrics,
             "scenario": optimized_metrics,
             "difference": {
-                "yield_percentage_points": optimized_metrics["yield_pct"]
-                - baseline_metrics["yield_pct"],
-                "energy_kw": optimized_metrics["energy_proxy_kw"]
-                - baseline_metrics["energy_proxy_kw"],
-                "temperature_c": optimized_metrics["temperature_c"]
-                - baseline_metrics["temperature_c"],
-                "pressure_bar": optimized_metrics["pressure_bar"]
-                - baseline_metrics["pressure_bar"],
-                "conversion_percentage_points": optimized_metrics["conversion_pct"]
-                - baseline_metrics["conversion_pct"],
-                "selectivity_percentage_points": optimized_metrics["selectivity_pct"]
-                - baseline_metrics["selectivity_pct"],
+                "yield_percentage_points": optimized_metrics["yield_pct"] - baseline_metrics["yield_pct"],  # type: ignore[operator]
+                "energy_kw": optimized_metrics["energy_proxy_kw"] - baseline_metrics["energy_proxy_kw"],  # type: ignore[operator]
+                "temperature_c": optimized_metrics["temperature_c"] - baseline_metrics["temperature_c"],  # type: ignore[operator]
+                "pressure_bar": optimized_metrics["pressure_bar"] - baseline_metrics["pressure_bar"],  # type: ignore[operator]
+                "conversion_percentage_points": optimized_metrics["conversion_pct"] - baseline_metrics["conversion_pct"],  # type: ignore[operator]
+                "selectivity_percentage_points": optimized_metrics["selectivity_pct"] - baseline_metrics["selectivity_pct"],  # type: ignore[operator]
             },
             "model_validity": "VALIDATED_MODEL_RANGE",
             "model_version_id": str(model_version.id),
@@ -1502,10 +1510,14 @@ def dashboard(context: TenantDependency, session: SessionDependency) -> dict[str
 async def dashboard_events(
     context: TenantDependency, session: SessionDependency
 ) -> StreamingResponse:
-    async def events():
+    async def events() -> AsyncGenerator[str, None]:
         # Read-only SSE polling endpoint; deployments can replace this with Redis/Kafka event fanout.
         for _ in range(60):
-            yield f"event: twin_state\ndata: {JSONResponse(content=dashboard_payload(context, session)).body.decode()}\n\n"
+            response = JSONResponse(content=dashboard_payload(context, session))
+            body = response.body
+            if isinstance(body, memoryview):
+                body = body.tobytes()
+            yield f"event: twin_state\ndata: {body.decode()}\n\n"
             await asyncio.sleep(5)
 
     return StreamingResponse(

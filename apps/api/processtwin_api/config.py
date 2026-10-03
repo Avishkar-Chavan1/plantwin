@@ -17,6 +17,21 @@ _INSECURE_SECRETS = frozenset(
     }
 )
 
+# Test override - set by test suite to bypass environment validation
+_test_settings_override: Settings | None = None
+
+
+def set_test_settings_override(settings: Settings) -> None:
+    """Set a test settings override for the test suite."""
+    global _test_settings_override
+    _test_settings_override = settings
+
+
+def clear_test_settings_override() -> None:
+    """Clear the test settings override."""
+    global _test_settings_override
+    _test_settings_override = None
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -164,4 +179,6 @@ class Settings:
 
 @lru_cache
 def get_settings() -> Settings:
+    if _test_settings_override is not None:
+        return _test_settings_override
     return Settings.from_environment()

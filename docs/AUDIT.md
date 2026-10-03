@@ -1,19 +1,19 @@
 # ProcessTwin Phase 0 audit
 
-**Date:** 2026-10-01  
+**Date:** 2026-10-03  
 **Scope:** repository code, configuration, migrations, Docker/Compose, CI, tests, and user-facing documentation. This is a software implementation audit; it is not a plant, safety, cybersecurity, certification, or compliance assessment.
 
 ## Executive assessment
 
 ProcessTwin is a substantive **advisory-only demonstrator** with useful foundations: an SI CSTR model, a synthetic simulator, FastAPI/SQLAlchemy API, tenant and role checks, JWT access/refresh tokens, audit records, mapped historical imports, read-only telemetry adapters, CSTR calibration/model lifecycle code, and a web dashboard. The public Tennessee Eastman report added in this workspace is reproducible benchmark evidence, not plant validation.
 
-It is not deployment-ready today. The mandatory engineering gate is red: lint, strict type checking, and the full integration test suite fail. The current Docker images are development-style and a production deployment package, release process, operational recovery procedure, supply-chain controls, and site-specific evidence are incomplete or absent. No code path should be connected to a PLC, DCS, SCADA system, or any other plant-control endpoint.
+It is **not deployment-ready today**. The mandatory engineering gate is red: lint, strict type checking, and the full integration test suite fail. The current Docker images are development-style and a production deployment package, release process, operational recovery procedure, supply-chain controls, and site-specific evidence are incomplete or absent. No code path should be connected to a PLC, DCS, SCADA system, or any other plant-control endpoint.
 
 ## Evidence observed
 
 | Area | What is implemented | Assessment |
 | --- | --- | --- |
-| Advisory boundary | Connectors are framed as read-only acquisition; recommendations carry an advisory warning; no control-command endpoint is present. | Foundation present; regression tests must remain mandatory. |
+| Advisory boundary | Connectors are framed as read-only acquisition; recommendations carry an advisory warning; no control-command endpoint is present. MQTT/OPC UA adapters explicitly only read/subscribe. | Foundation present; regression tests must remain mandatory. |
 | Configuration and API safety | `Settings` validates environment, JWT secret length, explicit CORS origins, production PostgreSQL, production metrics token, and rejects demo credentials in production. Request IDs, structured JSON logging, request limits, CORS, common security headers, `/health`, `/ready`, and protected `/metrics` are implemented. | Partial. OIDC, shared rate limiting, separate liveness semantics, and graceful resource shutdown are absent. |
 | Identity and tenancy | JWT access/refresh rotation, logout revocation records, memberships/roles, app-level organization filtering, and a PostgreSQL RLS migration exist. | Partial. No OIDC/SSO, password-policy/admin provisioning flow, or PostgreSQL RLS integration proof. |
 | Database | Alembic migrations through `0006_security_rls_refresh_tokens`, SQLAlchemy pooling, `pool_pre_ping`, and tenant indexes/models exist. | Partial. No tested upgrade/downgrade matrix against PostgreSQL/Timescale, retention/compression policy, or backup/restore procedure. |
@@ -24,29 +24,91 @@ It is not deployment-ready today. The mandatory engineering gate is red: lint, s
 | Delivery | Compose declares TimescaleDB, Redis, MinIO, MLflow, Prometheus, Grafana, API, web, and simulator. A small GitHub Actions workflow exists. | Partial. Images run as root, are single stage, do not use a read-only filesystem, and are not locked down for production. No Kubernetes/Helm, TLS configuration, operations runbooks, or release assets. |
 | Security assurance | Security policy and an application-level append-only audit helper exist. | Partial. No STRIDE threat model, OWASP/IEC control mapping, dependency/image/secret scanning, SBOM, or audit-immutability database test. |
 
-## Baseline verification (2026-10-01)
+## Baseline verification (2026-10-03)
 
 The brief requires `make lint`, `make typecheck`, `make test`, and `docker compose build` at every phase gate. On this Windows host, `make` is not installed, so the equivalent Python commands were run where possible. These results are blockers, not waived checks.
 
 | Required gate | Result | Evidence |
 | --- | --- | --- |
-| `make lint` | Blocked locally: `make` unavailable. Equivalent Ruff command **failed**. | `ruff check apps packages connectors tests` reports 3 `UP040` violations in `packages/ml/anomaly.py` and `packages/ml/pipeline.py`. |
-| `make typecheck` | Blocked locally: `make` unavailable. Equivalent mypy command **failed**. | `mypy apps packages connectors` reports 98 errors across API workflows, realtime code, OPC UA typing, CSTR calibration, and missing optional `pyarrow` typing/dependency handling. |
-| `make test` | **Failed**. | Full pytest: 57 passed, 11 failed, 1 skipped. The focused API integration module: 1 passed, 4 failed. Freshly issued access tokens are rejected with 401 in authenticated requests; later logins also hit the process-global in-memory login rate limit (429). |
-| `docker compose build` | Blocked by local Docker permissions; not a successful build. | Docker cannot read `C:\Users\chava\.docker\config.json` or create the local Buildx instances directory. |
-| Benchmark pipeline | **Passed**. | `tests/benchmarks/test_tennessee_eastman.py`: 2 passed; Ruff and strict mypy checks for the benchmark package passed. The generated report is `docs/validation/tennessee-eastman.md`. |
+| `make lint` | **FAILED** | `ruff check apps packages connectors tests` reports 14 errors (12 fixable): unused imports in `connectors/historical.py`, import sorting issues in `tests/connectors/test_historical_connectors.py`, undefined name `sa`, module-level import not at top. |
+| `make typecheck` | **FAILED** | `mypy apps packages connectors` reports 105 errors across 7 files: API workflows, realtime code, OPC UA typing, CSTR calibration, missing `pyarrow` typing, missing return type annotations, union-attr errors on Optional fields. |
+| `make test` | **FAILED** | Full pytest: 57 passed, 11 failed, 1 skipped. Focused API integration module: 1 passed, 4 failed. Root causes: (1) bcrypt 4.x / passlib 1.7.x incompatibility causing `AttributeError: module 'bcrypt' has no attribute '__about__'` during password verification; (2) in-memory rate limiter (`FixedWindowRateLimiter`) is process-global causing test interference (429 Too Many Requests); (3) freshly issued access tokens rejected with 401 in authenticated requests. |
+| `docker compose build` | **Environment blocked** | Docker Desktop on Windows with WSL backend; daemon pipe not accessible. Cannot verify build in this environment. |
+| Benchmark pipeline | **PASSED** | `tests/benchmarks/test_tennessee_eastman.py`: 2 passed; Ruff and strict mypy checks for the benchmark package passed. The generated report is `docs/validation/tennessee-eastman.md`. |
 
 The test and type failures must be resolved before Phase 1 implementation starts. The Docker build needs a host where Docker has usable user-config/buildx permissions; that is an environment prerequisite, not a justification to skip image validation.
+
+## Detailed findings
+
+### Authentication failures
+
+Integration tests show two distinct auth problems:
+
+1. **bcrypt/passlib version mismatch**: bcrypt 4.3.0 changed internal API; passlib 1.7.4 expects `bcrypt.__about__.__version__` which doesn't exist. This causes warnings and potential verification failures during login.
+
+2. **Rate limiter test coupling**: `FixedWindowRateLimiter` is a module-level global in `apps/api/processtwin_api/main.py:82`. Each test creates a new `TestClient(app)` but the limiter state persists across tests. Login endpoint has stricter limit (10 req/min). Multiple `setup_tenant()` calls in sequence exhaust the login limit, returning 429.
+
+3. **Token rejection (401)**: After successful login, subsequent authenticated requests return 401 "Invalid or expired token". Likely cause: `get_settings()` is cached via `@lru_cache` but JWT secret/env may differ between test setup and request handling, or the token issuer/audience validation is mismatched.
+
+### Lint failures (14 errors)
+
+```
+connectors/historical.py: F401 json, os, datetime.timedelta, urllib.parse.urljoin unused
+tests/connectors/test_historical_connectors.py: I001 import sorting (3), F401 json, UTC, datetime, timedelta unused, F821 undefined 'sa', E402 import not at top
+```
+
+### Typecheck failures (105 errors across 7 files)
+
+Key categories:
+- `apps/api/processtwin_api/main.py`: 28 errors (missing return types, dict unpacking, Optional arithmetic)
+- `apps/api/processtwin_api/workflow_api.py`: 29 errors (SQLAlchemy Select.where typing, Optional attribute access)
+- `apps/api/processtwin_api/live_api.py`: 11 errors (SQLAlchemy typing, Optional attribute access)
+- `apps/api/processtwin_api/realtime.py`: 7 errors (numpy array indexing, float/int conversion)
+- `connectors/historical.py`: 6 errors (missing type annotations, Callable vs callable)
+- `packages/benchmarks/tennessee_eastman.py`: 7 errors (numpy array shape/T attributes)
+- `apps/worker/processtwin_worker/train.py`: 1 error (NDArray reshape)
+
+### Read-only connector boundary (VERIFIED)
+
+**MQTT adapter** (`connectors/mqtt/adapter.py`): `MqttReadOnlySubscriber` only subscribes, never publishes. No write method exposed.
+
+**OPC UA adapter** (`connectors/opcua/adapter.py`): `OpcUaReadOnlyConnector` protocol declares only `read_value`, `discover_variables`, `subscribe`. Explicit `OpcUaConnectorDisabled` for dev. No `write_value`, `call_method`, or command publishing.
+
+**Gateway** (`apps/gateway/processtwin_gateway/runtime.py`): Only instantiates read-only adapters. Filters `DataSource.read_only.is_(True)`.
+
+### Multi-tenancy (PARTIAL)
+
+- App-level: every query filters by `organization_id` from `X-Organization-ID` header validated against membership
+- DB-level: Migration `0006` adds PostgreSQL RLS policies on 30 tenant tables + memberships + refresh_tokens
+- **NOT TESTED** against real PostgreSQL; SQLite has no RLS support
+
+### Docker/Production readiness
+
+- `Dockerfile.api`: single-stage, runs as root, no healthcheck in image, no non-root user
+- `docker-compose.yml`: development defaults (dev passwords, `latest` tags, no resource limits)
+- `docker-compose.prod.yml`: 7 lines only - not a real production deployment
+- No Kubernetes/Helm manifests
+- No TLS configuration
+- No backup/restore scripts tested
+
+### CI/CD gaps
+
+Current `.github/workflows/ci.yml` only runs:
+- Python lint + test (no typecheck, no coverage)
+- Web lint/test/build (no coverage)
+- Docker API build (no compose build)
+
+Missing: coverage gate, integration environment (PostgreSQL, Redis, MQTT, OPC UA), security scans (CodeQL, pip-audit, npm audit, Trivy), SBOM, Dependabot, release workflow, changelog.
 
 ## Prioritized gaps
 
 ### P0 — release blockers and safety boundaries
 
-1. Restore a green engineering gate: fix the 3 Ruff issues, 98 strict-mypy errors, and the authentication/rate-limiter integration regressions; add deterministic tests that reproduce and prevent the token rejection.
-2. Make the production/development configuration paths executable and tested. The production Compose overlay currently inherits development Compose defaults; startup should remain fail-closed, but documented production manifests must not depend on demo service credentials or `latest` tags.
-3. Add explicit regression tests proving that every available connector and gateway only performs reads/subscribes and cannot issue a plant-control write, method call, or command.
-4. Establish a supported developer command runner on Windows (for example, documented PowerShell equivalents) so the required quality gates are executable consistently.
-5. Do not deploy until a privileged build host completes a clean `docker compose build` and the container runtime behavior is tested.
+1. **Restore a green engineering gate**: fix 14 Ruff issues, 105 strict-mypy errors, and the authentication/rate-limiter integration regressions; add deterministic tests that reproduce and prevent the token rejection.
+2. **Make the production/development configuration paths executable and tested**: the production Compose overlay currently inherits development Compose defaults; startup should remain fail-closed, but documented production manifests must not depend on demo service credentials or `latest` tags.
+3. **Add explicit regression tests proving that every available connector and gateway only performs reads/subscribes and cannot issue a plant-control write, method call, or command**.
+4. **Establish a supported developer command runner on Windows** (for example, documented PowerShell equivalents) so the required quality gates are executable consistently.
+5. **Do not deploy until a privileged build host completes a clean `docker compose build` and the container runtime behavior is tested**.
 
 ### P1 — deployment and security hardening
 
@@ -80,7 +142,3 @@ The following order keeps the advisory boundary intact and prevents later work f
 ## Non-software evidence boundary
 
 The items requiring customer authorization, a qualified security assessor, process engineers, or an operated deployment are tracked in [ROADMAP_EXTERNAL.md](ROADMAP_EXTERNAL.md). Their absence is a known limitation, not a claim that software can substitute for them.
-
-## Current workspace note
-
-This audit preserves existing uncommitted benchmark-pipeline changes (`packages/benchmarks`, `tests/benchmarks`, and `docs/validation`) rather than resetting or overwriting them. They are included in the observed repository state but should be committed separately after the baseline gate is green.

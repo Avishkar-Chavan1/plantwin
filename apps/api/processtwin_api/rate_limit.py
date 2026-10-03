@@ -29,3 +29,12 @@ class FixedWindowRateLimiter:
                 return False, retry_after
             hits.append(now)
             return True, 0
+
+    def reset(self) -> None:
+        """Clear all rate limit state. For testing only."""
+        with self._lock:
+            self._hits.clear()
+
+
+# Global instance for production use; tests should override via dependency injection.
+RATE_LIMITER = FixedWindowRateLimiter()

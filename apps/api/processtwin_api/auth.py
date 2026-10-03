@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Protocol, cast
+from typing import Annotated, Any, Protocol, cast
 from uuid import UUID
 
 import jwt
@@ -51,19 +51,17 @@ def create_token(
 ) -> str:
     settings = get_settings()
     now = datetime.now(UTC)
-    return jwt.encode(
-        {
-            "sub": str(user_id),
-            "type": token_type,
-            "iat": now,
-            "exp": now + expires_in,
-            "jti": str(token_id) if token_id else None,
-            "iss": settings.jwt_issuer,
-            "aud": settings.jwt_audience,
-        },
-        settings.jwt_secret,
-        algorithm=settings.jwt_algorithm,
-    )
+    claims: dict[str, Any] = {
+        "sub": str(user_id),
+        "type": token_type,
+        "iat": now,
+        "exp": now + expires_in,
+        "iss": settings.jwt_issuer,
+        "aud": settings.jwt_audience,
+    }
+    if token_id is not None:
+        claims["jti"] = str(token_id)
+    return jwt.encode(claims, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
 def decode_token(credentials: HTTPAuthorizationCredentials | None) -> UUID:

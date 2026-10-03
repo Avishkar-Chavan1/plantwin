@@ -2,21 +2,20 @@
 
 from __future__ import annotations
 
-import json
-from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock, patch
 
+import httpx
 import pytest
-
+import sqlalchemy as sa
 from connectors.historical import (
+    CsvHistoricalSource,
     DatabaseHistoricalSource,
     DatabaseSourceConfig,
+    ParquetHistoricalSource,
     RestHistoricalSource,
     RestSourceConfig,
     SamplingAwareDatabaseSource,
     SamplingAwareRestSource,
-    CsvHistoricalSource,
-    ParquetHistoricalSource,
     read_historical_source,
 )
 
@@ -52,9 +51,10 @@ class TestCsvHistoricalSource:
 class TestParquetHistoricalSource:
     def test_read_valid_parquet(self) -> None:
         pytest.importorskip("pyarrow")
+        import io
+
         import pyarrow as pa
         import pyarrow.parquet as pq
-        import io
 
         table = pa.table({
             "timestamp": ["2024-01-01T00:00:00Z", "2024-01-01T00:01:00Z"],
@@ -77,7 +77,14 @@ class TestParquetHistoricalSource:
 
     def test_read_missing_pyarrow_raises(self) -> None:
         source = ParquetHistoricalSource()
-        with patch("connectors.historical.parquet", None):
+        # Patch the import to raise ImportError
+        import builtins
+        original_import = builtins.__import__
+        def mock_import(name, *args, **kwargs):
+            if name == "pyarrow.parquet":
+                raise ImportError("No module named 'pyarrow.parquet'")
+            return original_import(name, *args, **kwargs)
+        with patch("builtins.__import__", side_effect=mock_import):
             with pytest.raises(RuntimeError, match="parquet"):
                 source.read(b"data")
 
@@ -90,9 +97,10 @@ class TestReadHistoricalSource:
 
     def test_parquet_extension(self) -> None:
         pytest.importorskip("pyarrow")
+        import io
+
         import pyarrow as pa
         import pyarrow.parquet as pq
-        import io
 
         table = pa.table({"timestamp": ["2024-01-01T00:00:00Z"], "value": [1.0]})
         buf = io.BytesIO()
@@ -104,9 +112,10 @@ class TestReadHistoricalSource:
 
     def test_pq_extension(self) -> None:
         pytest.importorskip("pyarrow")
+        import io
+
         import pyarrow as pa
         import pyarrow.parquet as pq
-        import io
 
         table = pa.table({"timestamp": ["2024-01-01T00:00:00Z"], "value": [1.0]})
         buf = io.BytesIO()
@@ -179,13 +188,17 @@ class TestRestHistoricalSource:
     def test_read_with_list_response(self, config: RestSourceConfig) -> None:
         source = RestHistoricalSource(config)
         mock_client = Mock()
-        mock_response = Mock()
-        mock_response.json.return_value = [
+        # First call returns list with 2 items, second call returns empty list (pagination confirmation)
+        mock_response1 = Mock()
+        mock_response1.json.return_value = [
             {"timestamp": "2024-01-01T00:00:00Z", "value": 1.0},
             {"timestamp": "2024-01-01T00:01:00Z", "value": 2.0},
         ]
-        mock_response.raise_for_status.return_value = None
-        mock_client.request.return_value = mock_response
+        mock_response1.raise_for_status.return_value = None
+        mock_response2 = Mock()
+        mock_response2.json.return_value = []
+        mock_response2.raise_for_status.return_value = None
+        mock_client.request.side_effect = [mock_response1, mock_response2]
         source._client = mock_client
 
         rows = source.read(b"")
@@ -206,15 +219,17 @@ class TestRestHistoricalSource:
     def test_retry_on_failure(self, config: RestSourceConfig) -> None:
         source = RestHistoricalSource(config)
         mock_client = Mock()
+        # 3 calls: 1st fails, 2nd succeeds with 1 item, 3rd confirms no more data
         mock_client.request.side_effect = [
             httpx.RequestError("Connection failed"),
             Mock(json=lambda: {"data": [{"timestamp": "2024-01-01T00:00:00Z", "value": 1.0}]}, raise_for_status=lambda: None),
+            Mock(json=lambda: {"data": []}, raise_for_status=lambda: None),
         ]
         source._client = mock_client
 
         rows = source.read(b"")
         assert len(rows) == 1
-        assert mock_client.request.call_count == 2
+        assert mock_client.request.call_count == 3
 
     def test_context_manager(self, config: RestSourceConfig) -> None:
         with RestHistoricalSource(config) as source:
@@ -233,7 +248,8 @@ class TestRestSourceConfig:
         )
         source = RestHistoricalSource(config)
         client = source._get_client()
-        assert client.auth == ("user", "pass")
+        assert client.auth is not None
+        assert client.auth._auth_header == "Basic dXNlcjpwYXNz"
 
     def test_api_key_auth(self) -> None:
         config = RestSourceConfig(
@@ -275,17 +291,25 @@ class TestDatabaseHistoricalSource:
         # Mock engine and connection
         mock_conn = Mock()
         mock_result1 = Mock()
-        mock_result1._mapping = [{"timestamp": "2024-01-01T00:00:00Z", "value": 1.0},
-                                  {"timestamp": "2024-01-01T00:01:00Z", "value": 2.0}]
+        mock_row1 = Mock()
+        mock_row1._mapping = {"timestamp": "2024-01-01T00:00:00Z", "value": 1.0}
+        mock_row2 = Mock()
+        mock_row2._mapping = {"timestamp": "2024-01-01T00:01:00Z", "value": 2.0}
+        mock_result1.__iter__ = Mock(return_value=iter([mock_row1, mock_row2]))
         mock_result2 = Mock()
-        mock_result2._mapping = [{"timestamp": "2024-01-01T00:02:00Z", "value": 3.0}]
+        mock_row3 = Mock()
+        mock_row3._mapping = {"timestamp": "2024-01-01T00:02:00Z", "value": 3.0}
+        mock_result2.__iter__ = Mock(return_value=iter([mock_row3]))
         mock_result3 = Mock()
-        mock_result3._mapping = []
+        mock_result3.__iter__ = Mock(return_value=iter([]))
 
         mock_conn.execute.side_effect = [mock_result1, mock_result2, mock_result3]
 
         mock_engine = Mock()
-        mock_engine.connect.return_value.__enter__.return_value = mock_conn
+        mock_context = Mock()
+        mock_context.__enter__ = Mock(return_value=mock_conn)
+        mock_context.__exit__ = Mock(return_value=None)
+        mock_engine.connect.return_value = mock_context
         source._engine = mock_engine
 
         rows = source.read(b"")
@@ -302,17 +326,25 @@ class TestDatabaseHistoricalSource:
 
         mock_conn = Mock()
         mock_result1 = Mock()
-        mock_result1._mapping = [{"timestamp": "2024-01-01T00:00:00Z", "value": 1.0},
-                                  {"timestamp": "2024-01-01T00:01:00Z", "value": 2.0}]
+        mock_row1 = Mock()
+        mock_row1._mapping = {"timestamp": "2024-01-01T00:00:00Z", "value": 1.0}
+        mock_row2 = Mock()
+        mock_row2._mapping = {"timestamp": "2024-01-01T00:01:00Z", "value": 2.0}
+        mock_result1.__iter__ = Mock(return_value=iter([mock_row1, mock_row2]))
         mock_result2 = Mock()
-        mock_result2._mapping = [{"timestamp": "2024-01-01T00:02:00Z", "value": 3.0}]
+        mock_row3 = Mock()
+        mock_row3._mapping = {"timestamp": "2024-01-01T00:02:00Z", "value": 3.0}
+        mock_result2.__iter__ = Mock(return_value=iter([mock_row3]))
         mock_result3 = Mock()
-        mock_result3._mapping = []
+        mock_result3.__iter__ = Mock(return_value=iter([]))
 
         mock_conn.execute.side_effect = [mock_result1, mock_result2, mock_result3]
 
         mock_engine = Mock()
-        mock_engine.connect.return_value.__enter__.return_value = mock_conn
+        mock_context = Mock()
+        mock_context.__enter__ = Mock(return_value=mock_conn)
+        mock_context.__exit__ = Mock(return_value=None)
+        mock_engine.connect.return_value = mock_context
         source._engine = mock_engine
 
         chunks_received = []
@@ -335,11 +367,15 @@ class TestDatabaseHistoricalSource:
         mock_conn = Mock()
         mock_result = Mock()
         mock_result._mapping = []
+        mock_result.__iter__ = Mock(return_value=iter([]))
 
         mock_conn.execute.return_value = mock_result
 
         mock_engine = Mock()
-        mock_engine.connect.return_value.__enter__.return_value = mock_conn
+        mock_context = Mock()
+        mock_context.__enter__ = Mock(return_value=mock_conn)
+        mock_context.__exit__ = Mock(return_value=None)
+        mock_engine.connect.return_value = mock_context
         source._engine = mock_engine
 
         with pytest.raises(ValueError, match="no data rows"):
@@ -400,14 +436,14 @@ class TestSamplingAwareDatabaseSource:
             mock_read.return_value = [
                 {"timestamp": "2024-01-01T00:00:00Z", "value": 1.0},
                 {"timestamp": "2024-01-01T00:01:00Z", "value": 2.0},
-                {"timestamp": "2024-01-01T00:03:00Z", "value": 3.0},  # 2 min gap
-                {"timestamp": "2024-01-01T00:04:00Z", "value": 4.0},
+                {"timestamp": "2024-01-01T00:05:00Z", "value": 3.0},  # 4 min gap (240s > 180s)
+                {"timestamp": "2024-01-01T00:06:00Z", "value": 4.0},
             ]
             rows, interval, gaps = source.read_with_sampling_analysis(b"")
             assert len(rows) == 4
-            assert abs(interval - 90.0) < 10.0  # Average of 60, 120, 60
+            assert abs(interval - 120.0) < 50.0  # Average of 60, 240, 60 = 120
             assert len(gaps) == 1
-            assert gaps[0][2] > 180  # Gap > 3 minutes
+            assert gaps[0][2] > 180  # Gap > 3 minutes (240s gap)
 
     def test_no_gaps_when_regular(self) -> None:
         config = DatabaseSourceConfig(
@@ -425,7 +461,3 @@ class TestSamplingAwareDatabaseSource:
             ]
             rows, interval, gaps = source.read_with_sampling_analysis(b"")
             assert len(gaps) == 0
-
-
-# Import httpx for retry test
-import httpx

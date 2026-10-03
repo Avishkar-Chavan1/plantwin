@@ -7,7 +7,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import desc, select
+from sqlalchemy import and_, desc, select
 
 from .audit import append_audit
 from .auth import SessionDependency, TenantContext, require_roles, tenant_context
@@ -150,12 +150,15 @@ def create_source(
         )
     plant = session.scalar(
         select(Plant).where(
-            Plant.id == payload.plant_id,
-            Plant.organization_id == context.organization_id,
+            and_(
+                Plant.id == payload.plant_id,
+                Plant.organization_id == context.organization_id,
+            )
         )
     )
     if plant is None:
         _raise("PLANT_NOT_FOUND", "Plant was not found in this organization", 404)
+    assert plant is not None
     if len({item.source_key for item in payload.mappings}) != len(payload.mappings):
         _raise("DUPLICATE_SOURCE_KEY", "Each connector source key must be mapped once")
     for item in payload.mappings:
@@ -163,11 +166,13 @@ def create_source(
             select(Sensor)
             .join(Equipment, Equipment.id == Sensor.equipment_id)
             .where(
-                Sensor.id == item.sensor_id,
-                Sensor.organization_id == context.organization_id,
-                Sensor.enabled.is_(True),
-                Equipment.organization_id == context.organization_id,
-                Equipment.plant_id == plant.id,
+                and_(
+                    Sensor.id == item.sensor_id,
+                    Sensor.organization_id == context.organization_id,
+                    Sensor.enabled.is_(True),
+                    Equipment.organization_id == context.organization_id,
+                    Equipment.plant_id == plant.id,
+                )
             )
         )
         if sensor is None:
@@ -176,6 +181,7 @@ def create_source(
                 f"Enabled sensor {item.sensor_id} was not found in this plant",
                 404,
             )
+        assert sensor is not None
         try:
             from packages.units import convert
 
@@ -240,12 +246,15 @@ def get_source(
 ) -> dict[str, Any]:
     source = session.scalar(
         select(DataSource).where(
-            DataSource.id == source_id,
-            DataSource.organization_id == context.organization_id,
+            and_(
+                DataSource.id == source_id,
+                DataSource.organization_id == context.organization_id,
+            )
         )
     )
     if source is None:
         _raise("DATA_SOURCE_NOT_FOUND", "Data source was not found", 404)
+    assert source is not None
     return _source_payload(source)
 
 
@@ -255,12 +264,15 @@ def source_readings(
 ) -> dict[str, Any]:
     source = session.scalar(
         select(DataSource).where(
-            DataSource.id == source_id,
-            DataSource.organization_id == context.organization_id,
+            and_(
+                DataSource.id == source_id,
+                DataSource.organization_id == context.organization_id,
+            )
         )
     )
     if source is None:
         _raise("DATA_SOURCE_NOT_FOUND", "Data source was not found", 404)
+    assert source is not None
     mappings = list(
         session.scalars(
             select(SourceTagMapping).where(

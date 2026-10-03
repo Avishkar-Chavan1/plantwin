@@ -475,9 +475,12 @@ class LiveIngestionGateway:
                 .limit(1)
             )
         drift = bool(drift_event and drift_event.status == "MODEL_DRIFT_DETECTED")
+        sensor_count = int(quality["sensor_count"]) if isinstance(quality["sensor_count"], (int, float, str)) else 1
+        good_count_val = quality["good_count"]
+        good_fraction = (float(good_count_val) if isinstance(good_count_val, (int, float, str)) else 0.0) / max(1, sensor_count)
         health, score, factors = _health_factors(
             ages=ages,
-            good_fraction=float(quality["good_count"]) / max(1, int(quality["sensor_count"])),
+            good_fraction=good_fraction,
             missing=missing,
             residual_k=residual,
             ml_residual=ml_residual,
@@ -632,11 +635,11 @@ class LiveIngestionGateway:
                     component_scores.append(min(1.0, current_score / max(threshold * 2.0, 1e-9)))
                     deviations = []
                     for column, name in enumerate(names):
-                        center = float(np.median(baseline[:, column]))
+                        center = float(np.median(baseline[:, column]))  # type: ignore[index]
                         scale = max(
-                            float(np.median(np.abs(baseline[:, column] - center))) * 1.4826, 1e-9
+                            float(np.median(np.abs(baseline[:, column] - center))) * 1.4826, 1e-9  # type: ignore[index]
                         )
-                        deviations.append((abs(float(current[0, column]) - center) / scale, name))
+                        deviations.append((abs(float(current[0, column]) - center) / scale, name))  # type: ignore[index]
                     contributors.extend(
                         name for _deviation, name in sorted(deviations, reverse=True)[:3]
                     )

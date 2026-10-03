@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import csv
 import io
-import json
-import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any, Protocol
-from urllib.parse import urljoin
 
 import httpx
 import sqlalchemy as sa
@@ -28,7 +26,10 @@ class CsvHistoricalSource:
             reader = csv.DictReader(io.StringIO(text))
             if not reader.fieldnames:
                 raise ValueError("CSV must contain a header row")
-            return [dict(row) for row in reader]
+            rows = [dict(row) for row in reader]
+            if not rows:
+                raise ValueError("no data rows")
+            return rows
         except (UnicodeDecodeError, csv.Error) as exc:
             raise ValueError("CSV must be valid UTF-8 tabular data") from exc
 
@@ -154,14 +155,29 @@ class RestHistoricalSource:
 
             all_rows.extend(rows)
             if len(rows) < self.config.page_size:
-                break
+                # Make one more call to confirm no more data (some APIs require this)
+                offset += len(rows)
+                params["offset"] = str(offset)
+                response = self._request_with_retry(client, "GET", url, params=params)
+                data = response.json()
+                if isinstance(data, dict):
+                    rows = data.get("data", data.get("results", data.get("items", [])))
+                elif isinstance(data, list):
+                    rows = data
+                else:
+                    rows = []
+                if not rows:
+                    break
+                all_rows.extend(rows)
             offset += len(rows)
+            if len(rows) < self.config.page_size:
+                break
 
         if not all_rows:
             raise ValueError("REST historical source returned no data rows")
         return all_rows
 
-    def _request_with_retry(self, client: httpx.Client, method: str, url: str, **kwargs) -> httpx.Response:
+    def _request_with_retry(self, client: httpx.Client, method: str, url: str, **kwargs: Any) -> httpx.Response:
         last_exc: Exception | None = None
         for attempt in range(self.config.max_retries + 1):
             try:
@@ -184,7 +200,12 @@ class RestHistoricalSource:
     def __enter__(self) -> RestHistoricalSource:
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object | None,
+    ) -> None:
         self.close()
 
 
@@ -223,14 +244,23 @@ class DatabaseHistoricalSource:
                     break
                 all_rows.extend(rows)
                 if len(rows) < chunk_size:
-                    break
+                    # Make one more call to confirm no more data (some APIs require this)
+                    offset += len(rows)
+                    paginated_query = f"{query} LIMIT {chunk_size} OFFSET {offset}"
+                    result = conn.execute(sa.text(paginated_query), params)
+                    rows = [dict(row._mapping) for row in result]
+                    if not rows:
+                        break
+                    all_rows.extend(rows)
                 offset += len(rows)
+                if len(rows) < chunk_size:
+                    break
 
         if not all_rows:
             raise ValueError("Database historical source returned no data rows")
         return all_rows
 
-    def read_streaming(self, callback: callable) -> int:
+    def read_streaming(self, callback: Callable[[list[dict[str, object]]], None]) -> int:
         """Stream data from database in chunks, calling callback for each chunk."""
         engine = self._get_engine()
         query = self.config.query
@@ -262,7 +292,12 @@ class DatabaseHistoricalSource:
     def __enter__(self) -> DatabaseHistoricalSource:
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object | None,
+    ) -> None:
         self.close()
 
 

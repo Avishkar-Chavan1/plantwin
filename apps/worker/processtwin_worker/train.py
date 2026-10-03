@@ -124,7 +124,7 @@ def train_all(organization_id: UUID | None = None) -> int:
                     np.zeros(len(FEATURE_NAMES)),
                 ),
             )
-            feature_importance = np.asarray(raw_feature_importance, dtype=float).reshape(-1)
+            feature_importance = np.asarray(raw_feature_importance, dtype=float).reshape(-1)  # type: ignore[attr-defined]
             record = ModelVersion(
                 organization_id=organization.id,
                 name="CSTR Yield Hybrid",

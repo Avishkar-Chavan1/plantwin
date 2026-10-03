@@ -6,7 +6,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import desc, select
+from sqlalchemy import and_, desc, select
 
 from .audit import append_audit
 from .auth import SessionDependency, TenantContext, require_roles, tenant_context
@@ -73,29 +73,37 @@ def latest_twin(
 ) -> dict[str, Any]:
     equipment = session.scalar(
         select(Equipment).where(
-            Equipment.id == equipment_id,
-            Equipment.organization_id == context.organization_id,
+            and_(
+                Equipment.id == equipment_id,
+                Equipment.organization_id == context.organization_id,
+            )
         )
     )
     if equipment is None:
         _raise("EQUIPMENT_NOT_FOUND", "Equipment was not found", 404)
+    assert equipment is not None
     state = session.scalar(
         select(TwinState)
         .where(
-            TwinState.organization_id == context.organization_id,
-            TwinState.equipment_id == equipment.id,
+            and_(
+                TwinState.organization_id == context.organization_id,
+                TwinState.equipment_id == equipment.id,
+            )
         )
         .order_by(desc(TwinState.timestamp))
         .limit(1)
     )
     if state is None:
         _raise("TWIN_STATE_UNAVAILABLE", "No synchronized twin state is available", 404)
+    assert state is not None
     previous = list(
         session.scalars(
             select(TwinState)
             .where(
-                TwinState.organization_id == context.organization_id,
-                TwinState.equipment_id == equipment.id,
+                and_(
+                    TwinState.organization_id == context.organization_id,
+                    TwinState.equipment_id == equipment.id,
+                )
             )
             .order_by(desc(TwinState.timestamp))
             .limit(min(max(limit, 1), 500))
@@ -188,12 +196,15 @@ def review_recommendation(
 ) -> dict[str, Any]:
     item = session.scalar(
         select(Recommendation).where(
-            Recommendation.id == recommendation_id,
-            Recommendation.organization_id == context.organization_id,
+            and_(
+                Recommendation.id == recommendation_id,
+                Recommendation.organization_id == context.organization_id,
+            )
         )
     )
     if item is None:
         _raise("RECOMMENDATION_NOT_FOUND", "Recommendation was not found", 404)
+    assert item is not None
     now = datetime.now(UTC)
     if item.status in {"ACCEPTED", "REJECTED", "EXPIRED"} or (
         item.expires_at and as_utc(item.expires_at) <= now
@@ -251,18 +262,23 @@ def recommendation_reviews(
 ) -> dict[str, Any]:
     item = session.scalar(
         select(Recommendation).where(
-            Recommendation.id == recommendation_id,
-            Recommendation.organization_id == context.organization_id,
+            and_(
+                Recommendation.id == recommendation_id,
+                Recommendation.organization_id == context.organization_id,
+            )
         )
     )
     if item is None:
         _raise("RECOMMENDATION_NOT_FOUND", "Recommendation was not found", 404)
+    assert item is not None
     reviews = list(
         session.scalars(
             select(RecommendationReview)
             .where(
-                RecommendationReview.organization_id == context.organization_id,
-                RecommendationReview.recommendation_id == item.id,
+                and_(
+                    RecommendationReview.organization_id == context.organization_id,
+                    RecommendationReview.recommendation_id == item.id,
+                )
             )
             .order_by(RecommendationReview.created_at)
         )

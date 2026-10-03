@@ -16,12 +16,12 @@ dependencies = [
   "psycopg[binary]>=3.2,<4",
   "alembic>=1.13,<2",
   "passlib[bcrypt]>=1.7,<2",
-  # Passlib 1.7.x is not compatible with bcrypt 5's long-password backend probe.
-  "bcrypt>=4.0,<5",
+  # Passlib 1.7.x requires bcrypt 3.x; bcrypt 4.x changed internal API.
+  "bcrypt>=3.2,<4",
   "PyJWT>=2.9,<3",
   "email-validator>=2.2,<3",
-  "numpy>=2.0,<3",
-  "scipy>=1.14,<2",
+  "numpy>=1.26,<2",
+  "scipy>=1.11,<1.14",
   "scikit-learn>=1.5,<2",
   "prometheus-client>=0.20,<1",
   "python-multipart>=0.0.9,<1",

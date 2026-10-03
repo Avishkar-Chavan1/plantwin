@@ -4,7 +4,6 @@ from datetime import UTC, datetime
 
 from apps.api.processtwin_api.auth import hash_password
 from apps.api.processtwin_api.database import Base, SessionLocal, engine
-from apps.api.processtwin_api.main import app
 from apps.api.processtwin_api.models import (
     Equipment,
     Organization,
@@ -19,6 +18,9 @@ from fastapi.testclient import TestClient
 
 
 def setup_tenant() -> tuple[TestClient, dict[str, str], Sensor]:
+    # Import app HERE after test env is patched by conftest
+    from apps.api.processtwin_api.main import app
+
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as session:
