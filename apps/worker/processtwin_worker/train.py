@@ -113,7 +113,28 @@ def train_all(organization_id: UUID | None = None) -> int:
             result = train_residual_model(
                 np.array(feature_rows), np.array(targets), np.array(baselines), FEATURE_NAMES
             )
-            version = f"yield-residual-{trained + 1}"
+
+            # Determine next version number idempotently by checking existing model versions
+            existing_versions = session.scalars(
+                select(ModelVersion.version).where(
+                    ModelVersion.organization_id == organization.id,
+                    ModelVersion.name == "CSTR Yield Hybrid",
+                )
+            ).all()
+            next_version_num = 1
+            if existing_versions:
+                # Extract numeric suffix from versions like "yield-residual-1"
+                version_nums = []
+                for v in existing_versions:
+                    try:
+                        suffix = v.rsplit("-", 1)[-1]
+                        version_nums.append(int(suffix))
+                    except ValueError:
+                        continue
+                if version_nums:
+                    next_version_num = max(version_nums) + 1
+
+            version = f"yield-residual-{next_version_num}"
             path = Path("data/models") / f"{organization.id}-{version}.joblib"
             result.model.save(path)
             raw_feature_importance = cast(

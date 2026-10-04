@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: timescale/timescaledb:latest-pg16
+    image: postgres:16-alpine
     environment:
       POSTGRES_DB: processtwin
       POSTGRES_USER: processtwin
