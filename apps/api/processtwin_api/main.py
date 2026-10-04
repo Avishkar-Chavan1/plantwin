@@ -297,7 +297,7 @@ def readiness() -> Response:
     redis_url = os.getenv("REDIS_URL")
     if redis_url:
         try:
-            import redis
+            import redis  # type: ignore[import-untyped]
             client = redis.Redis.from_url(redis_url, socket_connect_timeout=2, socket_timeout=2)
             client.ping()
             checks["redis"] = "ok"
@@ -750,7 +750,11 @@ async def ingest_csv(
             session.rollback()
             if isinstance(exc, ApiError):
                 detail = exc.detail
-                message = detail["message"] if isinstance(detail, dict) else str(detail)
+                # ApiError always sets detail as dict with "code" and "message"
+                if isinstance(detail, dict):
+                    message = detail.get("message", str(detail))
+                else:
+                    message = str(detail)
             else:
                 message = str(exc)
             raise ApiError(422, "INVALID_CSV_ROW", f"Row {index}: {message}") from exc

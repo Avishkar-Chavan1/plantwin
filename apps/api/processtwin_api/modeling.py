@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Request
+from numpy.typing import NDArray
 from packages.calibration import (
     HistoricalCSTRSeries,
     calibrate_cstr,
@@ -233,8 +234,8 @@ def _historical_series(
             raise CalibrationSeriesError(
                 f"Canonical signal {canonical} must be normalized to {sorted(expected_units[canonical])}; got {unit}"
             )
-    columns: dict[str, np.ndarray] = {
-        name: np.asarray([values[name] for _, values in common], dtype=float)
+    columns: dict[str, NDArray[np.float64]] = {
+        name: np.asarray([values[name] for _, values in common], dtype=np.float64)
         for name in required_inputs
     }
     optional_targets = {
@@ -242,13 +243,13 @@ def _historical_series(
         "reactor.product_b": "measured_concentration_b_mol_m3",
         "reactor.product_c": "measured_concentration_c_mol_m3",
     }
-    optional = {
-        field: np.asarray([values[name] for _, values in common], dtype=float)
+    optional: dict[str, NDArray[np.float64]] = {
+        field: np.asarray([values[name] for _, values in common], dtype=np.float64)
         for name, field in optional_targets.items()
         if all(name in values for _, values in common)
     }
-    pressure = (
-        np.asarray([values["reactor.pressure"] for _, values in common], dtype=float)
+    pressure: NDArray[np.float64] | None = (
+        np.asarray([values["reactor.pressure"] for _, values in common], dtype=np.float64)
         if all("reactor.pressure" in values for _, values in common)
         else None
     )
@@ -441,11 +442,11 @@ def _residual_reference(
     prediction = simulate_historical_series(series, parameters)
     train_end = int(len(series.timestamps) * 0.6)
     indices = np.linspace(0, train_end - 1, min(train_end, 1000), dtype=int)
-    targets = {
+    targets: dict[str, NDArray[np.float64]] = {
         "feature:feed_temperature_k": series.feed_temperature_k,
         "feature:pressure_pa": series.pressure_pa
         if series.pressure_pa is not None
-        else np.full(len(series.timestamps), 101_325.0),
+        else np.full(len(series.timestamps), 101_325.0, dtype=np.float64),
         "feature:feed_flow_m3_s": series.feed_flow_m3_s,
         "feature:feed_concentration_a_mol_m3": series.feed_concentration_a_mol_m3,
         "feature:cooling_temperature_k": series.cooling_temperature_k,
@@ -455,9 +456,10 @@ def _residual_reference(
         "prediction_error:temperature_k": prediction["temperature_k"]
         - series.measured_temperature_k,
     }
+    result: dict[str, list[float]] = {}
     for key, values in targets.items():
-        targets[key] = np.asarray(values)[indices].astype(float).tolist()
-    return targets
+        result[key] = np.asarray(values)[indices].astype(float).tolist()
+    return result
 
 
 @router.get("/api/v1/physics/parameter-catalog")
@@ -1154,7 +1156,7 @@ def evaluate_model(
     }
 
 
-def _residual_distribution(values: np.ndarray) -> dict[str, float]:
+def _residual_distribution(values: NDArray[np.float64]) -> dict[str, float]:
     return {
         "mean": float(np.mean(values)),
         "standard_deviation": float(np.std(values, ddof=1)) if len(values) > 1 else 0.0,

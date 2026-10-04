@@ -5,13 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from numpy.typing import NDArray
 from scipy.integrate import solve_ivp  # type: ignore[import-untyped]
 
 
 @dataclass(frozen=True)
 class BatchResult:
-    time_s: np.ndarray
-    concentration_a_mol_m3: np.ndarray
+    time_s: NDArray[np.float64]
+    concentration_a_mol_m3: NDArray[np.float64]
 
 
 class BatchReactorPhysicsModel:

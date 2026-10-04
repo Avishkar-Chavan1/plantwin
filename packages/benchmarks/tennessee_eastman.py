@@ -17,6 +17,7 @@ from typing import Any, cast
 from urllib.request import Request, urlopen
 
 import numpy as np
+from numpy.typing import NDArray
 
 from packages.ml.drift import DriftResult, compare_drift
 from packages.ml.pipeline import ModelMetrics, TimeSplit, metrics
@@ -51,7 +52,7 @@ class TEPDataset:
 
     name: str
     source_url: str
-    values: np.ndarray
+    values: NDArray[np.float64]
     source_sha256: str
     sampling_interval_s: int = TEP_SAMPLE_INTERVAL_S
 
@@ -72,7 +73,7 @@ class TEPDataset:
         return len(self.values)
 
     @property
-    def elapsed_seconds(self) -> np.ndarray:
+    def elapsed_seconds(self) -> NDArray[np.float64]:
         return np.arange(self.sample_count, dtype=np.float64) * self.sampling_interval_s
 
     @property
@@ -84,19 +85,19 @@ class TEPDataset:
 class TEPSurrogate:
     """Standardized ridge one-step forecast for XMEAS(9), reactor temperature."""
 
-    feature_mean: np.ndarray
-    feature_scale: np.ndarray
+    feature_mean: NDArray[np.float64]
+    feature_scale: NDArray[np.float64]
     target_mean: float
     target_scale: float
-    coefficients: np.ndarray
-    training_feature_minimum: np.ndarray
-    training_feature_maximum: np.ndarray
+    coefficients: NDArray[np.float64]
+    training_feature_minimum: NDArray[np.float64]
+    training_feature_maximum: NDArray[np.float64]
     envelope_margin_fraction: float
     ridge_alpha: float
     train_sample_count: int
     source_sha256: str
-    training_features: np.ndarray
-    training_target: np.ndarray
+    training_features: NDArray[np.float64]
+    training_target: NDArray[np.float64]
 
     def __post_init__(self) -> None:
         expected = (TEP_VARIABLE_COUNT,)
@@ -131,19 +132,19 @@ class TEPSurrogate:
     def target_name(self) -> str:
         return TEP_VARIABLE_NAMES[REACTOR_TEMPERATURE_INDEX]
 
-    def predict(self, features: np.ndarray) -> np.ndarray:
-        matrix = np.asarray(features, dtype=float)
+    def predict(self, features: NDArray[np.float64]) -> NDArray[np.float64]:
+        matrix = np.asarray(features, dtype=np.float64)
         if matrix.ndim != 2 or matrix.shape[1] != TEP_VARIABLE_COUNT:
             raise ValueError(f"Expected a feature matrix with {TEP_VARIABLE_COUNT} columns")
         if not np.isfinite(matrix).all():
             raise ValueError("Features must be finite")
         standardized = (matrix - self.feature_mean) / self.feature_scale
         return cast(
-            np.ndarray,
+            NDArray[np.float64],
             (standardized @ self.coefficients) * self.target_scale + self.target_mean,
         )
 
-    def outside_envelope(self, features: np.ndarray) -> np.ndarray:
+    def outside_envelope(self, features: NDArray[np.float64]) -> NDArray[np.bool_]:
         """Return rows outside the calibration feature min/max envelope plus tolerance.
 
         This is a deployment gate, not a physical safety limit.  It deliberately
@@ -151,14 +152,14 @@ class TEPSurrogate:
         avoid treating small sensor-noise excursions as a new operating regime.
         """
 
-        matrix = np.asarray(features, dtype=float)
+        matrix = np.asarray(features, dtype=np.float64)
         if matrix.ndim != 2 or matrix.shape[1] != TEP_VARIABLE_COUNT:
             raise ValueError(f"Expected a feature matrix with {TEP_VARIABLE_COUNT} columns")
         span = self.training_feature_maximum - self.training_feature_minimum
         tolerance = np.maximum(span * self.envelope_margin_fraction, self.feature_scale * 0.1)
         lower = self.training_feature_minimum - tolerance
         upper = self.training_feature_maximum + tolerance
-        return np.any((matrix < lower) | (matrix > upper), axis=1)
+        return cast(NDArray[np.bool_], np.any((matrix < lower) | (matrix > upper), axis=1))
 
 
 @dataclass(frozen=True)
@@ -206,7 +207,7 @@ class TEPCalibration:
     held_out_test: TEPEvaluation
 
 
-def _read_tep_matrix(raw: bytes) -> np.ndarray:
+def _read_tep_matrix(raw: bytes) -> NDArray[np.float64]:
     """Read numeric whitespace data and normalize either published orientation.
 
     ``d00.dat`` is variable-by-time (52 x 480), while the published ``*_te``
@@ -281,13 +282,13 @@ def download_public_tep_dataset(
     return destination
 
 
-def _forecast_pairs(dataset: TEPDataset) -> tuple[np.ndarray, np.ndarray]:
+def _forecast_pairs(dataset: TEPDataset) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     return dataset.values[:-1], dataset.values[1:, REACTOR_TEMPERATURE_INDEX]
 
 
 def _fit_ridge(
-    features: np.ndarray,
-    target: np.ndarray,
+    features: NDArray[np.float64],
+    target: NDArray[np.float64],
     *,
     source_sha256: str,
     ridge_alpha: float,
@@ -328,10 +329,10 @@ def _fit_ridge(
 
 def _drift_for_evaluation(
     model: TEPSurrogate,
-    train_features: np.ndarray,
-    train_target: np.ndarray,
-    features: np.ndarray,
-    target: np.ndarray,
+    train_features: NDArray[np.float64],
+    train_target: NDArray[np.float64],
+    features: NDArray[np.float64],
+    target: NDArray[np.float64],
 ) -> DriftResult:
     reference_prediction = model.predict(train_features)
     current_prediction = model.predict(features)
@@ -354,10 +355,10 @@ def _evaluate_pairs(
     *,
     dataset_name: str,
     source_sha256: str,
-    train_features: np.ndarray,
-    train_target: np.ndarray,
-    features: np.ndarray,
-    target: np.ndarray,
+    train_features: NDArray[np.float64],
+    train_target: NDArray[np.float64],
+    features: NDArray[np.float64],
+    target: NDArray[np.float64],
 ) -> TEPEvaluation:
     prediction = model.predict(features)
     outside = model.outside_envelope(features)

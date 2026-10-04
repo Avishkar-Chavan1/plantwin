@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
 from scipy.integrate import solve_ivp  # type: ignore[import-untyped]
 from scipy.optimize import least_squares  # type: ignore[import-untyped]
 
@@ -108,7 +108,7 @@ class CSTRState:
     concentration_c_mol_m3: float
     temperature_k: float
 
-    def vector(self) -> np.ndarray:
+    def vector(self) -> NDArray[np.float64]:
         return np.array(
             [
                 self.concentration_a_mol_m3,
@@ -116,11 +116,11 @@ class CSTRState:
                 self.concentration_c_mol_m3,
                 self.temperature_k,
             ],
-            dtype=float,
+            dtype=np.float64,
         )
 
     @classmethod
-    def from_vector(cls, vector: np.ndarray) -> CSTRState:
+    def from_vector(cls, vector: NDArray[np.float64]) -> CSTRState:
         return cls(*(float(value) for value in vector))
 
 
@@ -138,7 +138,7 @@ class StateMetrics:
 
 @dataclass(frozen=True)
 class SimulationResult:
-    time_s: np.ndarray
+    time_s: NDArray[np.float64]
     states: tuple[CSTRState, ...]
     metrics: tuple[StateMetrics, ...]
 
@@ -177,7 +177,7 @@ class CSTRPhysicsModel:
         concentration_a = max(state.concentration_a_mol_m3, 0.0)
         return k_main * concentration_a, k_side * concentration_a
 
-    def derivatives(self, _time_s: float, vector: np.ndarray, inputs: CSTRInputs) -> np.ndarray:
+    def derivatives(self, _time_s: float, vector: NDArray[np.float64], inputs: CSTRInputs) -> NDArray[np.float64]:
         """Return [dCA/dt, dCB/dt, dCC/dt, dT/dt] from the balances."""
         state = CSTRState.from_vector(vector)
         rate_main, rate_side = self.rates(state)
@@ -237,17 +237,17 @@ class CSTRPhysicsModel:
         time_span_s: tuple[float, float],
         *,
         sample_count: int = 121,
-        sample_times_s: Sequence[float] | np.ndarray | None = None,
+        sample_times_s: Sequence[float] | NDArray[np.float64] | None = None,
     ) -> SimulationResult:
         """Run a dynamic scenario; callable inputs permit scheduled disturbances."""
         if sample_count < 2 or time_span_s[1] <= time_span_s[0]:
             raise ValueError("Simulation needs at least two samples and an increasing time span")
         input_at = inputs if callable(inputs) else lambda _time: inputs
-        evaluation_times: Any
+        evaluation_times: NDArray[np.float64]
         if sample_times_s is None:
-            evaluation_times = np.linspace(*time_span_s, sample_count)
+            evaluation_times = np.linspace(*time_span_s, sample_count, dtype=np.float64)
         else:
-            evaluation_times = np.asarray(sample_times_s, dtype=float)
+            evaluation_times = np.asarray(sample_times_s, dtype=np.float64)
             if (
                 evaluation_times.ndim != 1
                 or len(evaluation_times) < 2
@@ -290,8 +290,8 @@ class CSTRPhysicsModel:
         )
         concentration_scale = max(inputs.feed_concentration_a_mol_m3, 1.0)
         temperature_scale = max(inputs.feed_temperature_k, 1.0)
-        scales = np.array(
-            [concentration_scale, concentration_scale, concentration_scale, temperature_scale]
+        scales: NDArray[np.float64] = np.array(
+            [concentration_scale, concentration_scale, concentration_scale, temperature_scale], dtype=np.float64
         )
         result = least_squares(
             lambda vector: self.derivatives(0.0, vector, inputs) / scales,

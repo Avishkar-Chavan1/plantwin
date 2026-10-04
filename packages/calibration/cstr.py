@@ -3,9 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime
 from math import isfinite
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
 from scipy.optimize import differential_evolution, least_squares  # type: ignore[import-untyped]
 
 from packages.ml.pipeline import ModelMetrics, metrics
@@ -52,15 +53,15 @@ class CalibrationParameter:
 @dataclass(frozen=True)
 class HistoricalCSTRSeries:
     timestamps: tuple[datetime, ...]
-    feed_flow_m3_s: np.ndarray
-    feed_temperature_k: np.ndarray
-    feed_concentration_a_mol_m3: np.ndarray
-    cooling_temperature_k: np.ndarray
-    measured_temperature_k: np.ndarray
-    pressure_pa: np.ndarray | None = None
-    measured_concentration_a_mol_m3: np.ndarray | None = None
-    measured_concentration_b_mol_m3: np.ndarray | None = None
-    measured_concentration_c_mol_m3: np.ndarray | None = None
+    feed_flow_m3_s: NDArray[np.float64]
+    feed_temperature_k: NDArray[np.float64]
+    feed_concentration_a_mol_m3: NDArray[np.float64]
+    cooling_temperature_k: NDArray[np.float64]
+    measured_temperature_k: NDArray[np.float64]
+    pressure_pa: NDArray[np.float64] | None = None
+    measured_concentration_a_mol_m3: NDArray[np.float64] | None = None
+    measured_concentration_b_mol_m3: NDArray[np.float64] | None = None
+    measured_concentration_c_mol_m3: NDArray[np.float64] | None = None
     feed_flow_source_unit: str = "m3/s"
 
     def __post_init__(self) -> None:
@@ -97,9 +98,9 @@ class HistoricalCSTRSeries:
             raise ValueError("Measured temperatures must be positive Kelvin")
 
     @property
-    def elapsed_seconds(self) -> np.ndarray:
+    def elapsed_seconds(self) -> NDArray[np.float64]:
         start = self.timestamps[0]
-        return np.asarray([(stamp - start).total_seconds() for stamp in self.timestamps])
+        return np.asarray([(stamp - start).total_seconds() for stamp in self.timestamps], dtype=np.float64)
 
 
 @dataclass(frozen=True)
@@ -194,10 +195,10 @@ def parameter_values(parameters: CSTRParameters) -> dict[str, float]:
 
 
 def volumetric_flow_m3_s(
-    values: np.ndarray, normalized_unit: str, density_kg_m3: float
-) -> np.ndarray:
+    values: NDArray[np.float64], normalized_unit: str, density_kg_m3: float
+) -> NDArray[np.float64]:
     """Convert a normalized historian feed flow to the CSTR's volumetric-flow SI input."""
-    flow = np.asarray(values, dtype=float)
+    flow = np.asarray(values, dtype=np.float64)
     if not np.isfinite(flow).all() or np.any(flow < 0):
         raise ValueError("Feed flow values must be finite and non-negative")
     if normalized_unit == "m3/s":
@@ -205,7 +206,7 @@ def volumetric_flow_m3_s(
     if normalized_unit == "kg/s":
         if not isfinite(density_kg_m3) or density_kg_m3 <= 0:
             raise ValueError("A finite positive fluid density is required to convert kg/s to m³/s")
-        return cast(np.ndarray, flow / density_kg_m3)
+        return flow / density_kg_m3
     raise ValueError("CSTR feed flow must be normalized to m3/s or kg/s")
 
 
@@ -253,7 +254,7 @@ def validate_parameter_records(records: dict[str, dict[str, Any]]) -> CSTRParame
     return replace(CSTRParameters(), **changes)
 
 
-def _state_targets(series: HistoricalCSTRSeries) -> dict[str, np.ndarray]:
+def _state_targets(series: HistoricalCSTRSeries) -> dict[str, NDArray[np.float64]]:
     targets = {"temperature_k": series.measured_temperature_k}
     for name, values in (
         ("concentration_a_mol_m3", series.measured_concentration_a_mol_m3),
@@ -267,7 +268,7 @@ def _state_targets(series: HistoricalCSTRSeries) -> dict[str, np.ndarray]:
 
 def simulate_historical_series(
     series: HistoricalCSTRSeries, parameters: CSTRParameters
-) -> dict[str, np.ndarray]:
+) -> dict[str, NDArray[np.float64]]:
     """Integrate the existing CSTR balances over observed historical input trajectories."""
     elapsed = series.elapsed_seconds
     if elapsed[-1] <= 0:
@@ -322,7 +323,7 @@ def simulate_historical_series(
     }
 
 
-def _distribution(residual: np.ndarray) -> dict[str, float]:
+def _distribution(residual: NDArray[np.float64]) -> dict[str, float]:
     return {
         "mean": float(np.mean(residual)),
         "standard_deviation": float(np.std(residual, ddof=1)) if len(residual) > 1 else 0.0,
@@ -416,14 +417,14 @@ def calibrate_cstr(
         if len(values[train_slice]) > 0
     }
 
-    def parameters_at(vector: np.ndarray) -> CSTRParameters:
+    def parameters_at(vector: NDArray[np.float64]) -> CSTRParameters:
         changes = {
             _PARAMETER_SPECS[name][0]: float(value)
             for name, value in zip(names, vector, strict=True)
         }
         return replace(initial_parameters, **changes)
 
-    def residual_vector(vector: np.ndarray) -> np.ndarray:
+    def residual_vector(vector: NDArray[np.float64]) -> NDArray[np.float64]:
         predicted = simulate_historical_series(series, parameters_at(vector))
         residuals = [
             (predicted[name][train_slice] - values[train_slice]) / scales[name]
