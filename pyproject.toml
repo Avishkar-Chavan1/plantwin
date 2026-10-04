@@ -34,7 +34,7 @@ dependencies = [
   # Production image entry point (Dockerfile.api.prod) runs gunicorn.
   "gunicorn>=22,<24",
   # Optional readiness probe target: reports Redis health when REDIS_URL is configured.
-  "redis>=5,<7",
+  "redis>=5,<9",
 ]
 
 [project.optional-dependencies]
