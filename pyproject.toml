@@ -32,7 +32,7 @@ dependencies = [
   # HTTP client used by historical connectors.
   "httpx>=0.27,<1",
   # Production image entry point (Dockerfile.api.prod) runs gunicorn.
-  "gunicorn>=22,<24",
+  "gunicorn>=22,<27",
   # Optional readiness probe target: reports Redis health when REDIS_URL is configured.
   "redis>=5,<7",
 ]
