@@ -38,12 +38,62 @@ class TenantContext:
     role: RoleName
 
 
+# OIDC/SSO integration point (not implemented - requires external IdP)
+# This is a placeholder for future OIDC implementation.
+class OIDCProvider(Protocol):
+    """Protocol for OIDC provider integration.
+
+    Implement this protocol to integrate with an external OIDC/OAuth2 provider.
+    The application does not ship with a built-in OIDC provider.
+    """
+
+    async def get_authorization_url(self, state: str, redirect_uri: str) -> str:
+        """Generate the authorization URL for the OIDC flow."""
+        ...
+
+    async def exchange_code_for_tokens(
+        self, code: str, redirect_uri: str
+    ) -> tuple[str, str, dict[str, Any]]:
+        """Exchange authorization code for access/refresh tokens and user info.
+        Returns (access_token, refresh_token, user_info).
+        """
+        ...
+
+    async def get_user_info(self, access_token: str) -> dict[str, Any]:
+        """Fetch user info from the OIDC provider."""
+        ...
+
+    async def refresh_access_token(self, refresh_token: str) -> tuple[str, str]:
+        """Refresh the access token. Returns (new_access_token, new_refresh_token)."""
+        ...
+
+
+_oidc_provider: OIDCProvider | None = None
+
+
+def set_oidc_provider(provider: OIDCProvider) -> None:
+    """Set the OIDC provider instance. For testing and integration."""
+    global _oidc_provider
+    _oidc_provider = provider
+
+
+def get_oidc_provider() -> OIDCProvider | None:
+    """Get the configured OIDC provider, if any."""
+    return _oidc_provider
+
+
 def hash_password(password: str) -> str:
     return password_context.hash(password)
 
 
 def verify_password(password: str, password_hash: str) -> bool:
     return password_context.verify(password, password_hash)
+
+
+def validate_password_policy(password: str) -> tuple[bool, list[str]]:
+    """Validate password against configured policy. Returns (is_valid, list_of_errors)."""
+    settings = get_settings()
+    return settings.validate_password(password)
 
 
 def create_token(

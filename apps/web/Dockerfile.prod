@@ -1,0 +1,60 @@
+# Production Dockerfile for ProcessTwin Web (Next.js)
+# Multi-stage build: builder -> runner
+# Runs as non-root user
+
+# Stage 1: Builder
+FROM node:22-alpine AS builder
+
+WORKDIR /app
+
+# Copy package and package-manager config first so install is reproducible
+COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml* .npmrc* ./
+
+# Install pnpm (pinned major) and dependencies from the committed lockfile
+RUN npm install -g pnpm@10
+RUN pnpm install --frozen-lockfile
+
+# Copy source code
+COPY . .
+
+# NEXT_PUBLIC_* variables are compiled into browser JavaScript by Next.js, so
+# setting this only on the running container is too late. It is intentionally a
+# build argument (public origin, never a secret) and must be supplied for every
+# production image build.
+ARG NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+
+# Build the application. Fail explicitly instead of silently baking the local
+# development fallback (http://localhost:8000) into a production image.
+RUN test -n "$NEXT_PUBLIC_API_URL"
+RUN pnpm run build
+
+# Stage 2: Runner
+FROM node:22-alpine AS runner
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+# Create non-root user
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 nextjs
+
+# Copy built application
+COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+# Switch to non-root user
+USER nextjs
+
+EXPOSE 3000
+
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:3000 || exit 1
+
+CMD ["node", "server.js"]

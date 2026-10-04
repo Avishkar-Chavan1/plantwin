@@ -20,6 +20,9 @@ For an entirely local developer run with SQLite:
 
 ```powershell
 Copy-Item .env.example .env
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+# Run the command above twice and put each value in .env as JWT_SECRET and METRICS_TOKEN:
+# the .env.example placeholders are refused at startup on purpose.
 python -m pip install -e ".[dev]"
 make seed
 make api
@@ -66,6 +69,15 @@ Bounded CSTR parameter fitting, independent model evaluation, lifecycle gates, h
 | `make evaluate` | Print held-out time-based model metrics. |
 | `make public-validation` | Download/cache the public Tennessee Eastman benchmark and regenerate its report. |
 | `make migrate` | Apply Alembic schema revisions. |
+
+`make` is not available on every host (it is missing on default Windows installs). The
+same quality gates can always be run directly, which is exactly what the Makefile does:
+
+```bash
+python -m ruff check apps packages connectors tests   # make lint
+python -m mypy apps packages connectors              # make typecheck
+python -m pytest                                       # make test
+```
 
 ## Limitations and operating boundary
 

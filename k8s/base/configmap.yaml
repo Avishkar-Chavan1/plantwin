@@ -1,0 +1,37 @@
+# Non-sensitive application configuration. Key names match the Settings model in
+# apps/api/processtwin_api/config.py one-for-one; sensitive values live in the
+# `processtwin-secrets` Secret (see secret.example.yaml).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: processtwin-config
+  namespace: processtwin
+  labels:
+    app.kubernetes.io/name: processtwin
+    app.kubernetes.io/part-of: processtwin-platform
+data:
+  ENVIRONMENT: "production"
+  LOG_LEVEL: "INFO"
+  LOGIN_RATE_LIMIT_REQUESTS: "10"
+  RATE_LIMIT_REQUESTS: "120"
+  RATE_LIMIT_WINDOW_SECONDS: "60"
+  MAX_UPLOAD_BYTES: "5000000"
+  MAX_REQUEST_BYTES: "5256000"
+  ACCESS_TOKEN_EXPIRE_MINUTES: "30"
+  REFRESH_TOKEN_EXPIRE_DAYS: "7"
+  JWT_ALGORITHM: "HS256"
+  JWT_ISSUER: "processtwin-api"
+  JWT_AUDIENCE: "processtwin-web"
+  # Absolute HTTPS origins, comma separated; production rejects "*" and http://.
+  CORS_ORIGINS: "https://your-domain.com"
+  # The browser API origin is supplied as a Docker build argument
+  # (NEXT_PUBLIC_API_URL), because Next.js compiles it into client JavaScript.
+  MLFLOW_TRACKING_URI: ""
+  # Optional object storage; an empty endpoint disables it (imports stay in the database).
+  MINIO_ENDPOINT: ""
+  MINIO_BUCKET: "processtwin"
+  MINIO_SECURE: "true"
+  # Optional Redis; an empty URL reports "not_configured" on /ready instead of failing.
+  REDIS_URL: ""
+  # DATABASE_URL is intentionally absent: it embeds credentials and comes from the
+  # `processtwin-secrets` Secret.

@@ -1,0 +1,180 @@
+# Kubernetes API workload: serialized migration init container, hardened runtime, probes, service.
+#
+# Secrets are deliberately NOT part of this manifest. Create them first (see ../README.md):
+#   kubectl -n processtwin create secret generic processtwin-secrets \
+#     --from-literal=DATABASE_URL='postgresql+psycopg://app_role@...' \
+#     --from-literal=DATABASE_ADMIN_URL='postgresql+psycopg://owner_role@...' \
+#     --from-literal=JWT_SECRET='...' \
+#     --from-literal=METRICS_TOKEN='...'
+# A missing secret fails the pod with an explicit config error instead of an insecure start.
+#
+# Two-role posture: DATABASE_ADMIN_URL (table owner) is used ONLY by the migration
+# init container; the API runs with the non-owner DATABASE_URL so PostgreSQL RLS
+# policies are enforced (owners bypass RLS). Provision the app role with
+# scripts/postgres_app_role.sql before the first migration.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: processtwin-api
+  namespace: processtwin
+  labels:
+    app.kubernetes.io/name: processtwin-api
+    app.kubernetes.io/part-of: processtwin-platform
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: processtwin-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: processtwin-api
+        app.kubernetes.io/part-of: processtwin-platform
+      annotations:
+        # Bump when configuration changes so pods restart with new settings.
+        checksum/config: "processtwin-config"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Production never auto-creates schema from the API process. Every API pod has
+        # an init container, but the migration runner takes a PostgreSQL advisory lock
+        # so a rollout/scale-out executes schema changes exactly one at a time.
+        - name: migrate
+          image: processtwin/api:0.1.0
+          command: ["python", "-m", "apps.api.processtwin_api.migration_runner"]
+          envFrom:
+            - configMapRef:
+                name: processtwin-config
+          env:
+            # Migrations need owner DDL rights; the app role must never have them.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: processtwin-secrets
+                  key: DATABASE_ADMIN_URL
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: processtwin-secrets
+                  key: JWT_SECRET
+            - name: METRICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: processtwin-secrets
+                  key: METRICS_TOKEN
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: app-tmp
+              mountPath: /app/tmp
+      containers:
+        - name: api
+          image: processtwin/api:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: processtwin-config
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: processtwin-secrets
+                  key: DATABASE_URL
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: processtwin-secrets
+                  key: JWT_SECRET
+            - name: METRICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: processtwin-secrets
+                  key: METRICS_TOKEN
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: app-logs
+              mountPath: /app/logs
+            - name: app-tmp
+              mountPath: /app/tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: app-logs
+          emptyDir: {}
+        - name: app-tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: processtwin-api
+  namespace: processtwin
+  labels:
+    app.kubernetes.io/name: processtwin-api
+    app.kubernetes.io/part-of: processtwin-platform
+spec:
+  selector:
+    app.kubernetes.io/name: processtwin-api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP

@@ -493,7 +493,7 @@ class LiveIngestionGateway:
             "unit": "points",
             "method": "unweighted mean of documented available factors",
         }
-        state_values = {
+        state_values: dict[str, Any] = {
             "mode": mode,
             "measurements": {
                 name: {
@@ -635,11 +635,11 @@ class LiveIngestionGateway:
                     component_scores.append(min(1.0, current_score / max(threshold * 2.0, 1e-9)))
                     deviations = []
                     for column, name in enumerate(names):
-                        center = float(np.median(baseline[:, column]))  # type: ignore[index]
+                        center = float(np.median(baseline[:, column]))
                         scale = max(
-                            float(np.median(np.abs(baseline[:, column] - center))) * 1.4826, 1e-9  # type: ignore[index]
+                            float(np.median(np.abs(baseline[:, column] - center))) * 1.4826, 1e-9
                         )
-                        deviations.append((abs(float(current[0, column]) - center) / scale, name))  # type: ignore[index]
+                        deviations.append((abs(float(current[0, column]) - center) / scale, name))
                     contributors.extend(
                         name for _deviation, name in sorted(deviations, reverse=True)[:3]
                     )

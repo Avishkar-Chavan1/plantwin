@@ -1,7 +1,189 @@
+# Production compose file.
+#
+# Stateful services (PostgreSQL/TimescaleDB, Redis, MinIO, MLflow, Prometheus, Grafana)
+# are intentionally NOT defined here: production runs them as managed instances or as a
+# separately operated stack. Every mandatory value uses ${VAR:?message}, so compose fails
+# fast with an actionable error instead of starting a container that cannot boot.
+#
+# Usage:
+#   cp .env.example .env            # then set ENVIRONMENT=production and real secrets
+#   docker compose -f docker-compose.prod.yml build
+#   docker compose -f docker-compose.prod.yml up -d      # migrate -> api/web
+#   docker compose -f docker-compose.prod.yml --profile training run --rm train
+#
+# The synthetic `simulator` service is deliberately not defined here: it refuses to run
+# with ENVIRONMENT=production. Use docker-compose.yml for the simulated demo stack.
+
+# Shared, fail-fast application configuration. Simulator, worker and API all construct the
+# same Settings object, so production validation applies to every one of them.
+x-app-environment: &app-environment
+  ENVIRONMENT: production
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be a postgresql:// URL}
+  JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be generated with at least 32 characters}
+  METRICS_TOKEN: ${METRICS_TOKEN:?METRICS_TOKEN must be generated with at least 32 characters}
+  CORS_ORIGINS: ${CORS_ORIGINS:?CORS_ORIGINS must list explicit https:// origins}
+  ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+  REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
+  JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+  RATE_LIMIT_REQUESTS: ${RATE_LIMIT_REQUESTS:-120}
+  RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
+  LOGIN_RATE_LIMIT_REQUESTS: ${LOGIN_RATE_LIMIT_REQUESTS:-10}
+  MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-5000000}
+  MAX_REQUEST_BYTES: ${MAX_REQUEST_BYTES:-5256000}
+  # Optional integrations. An empty value means "disabled", never "insecure default".
+  REDIS_URL: ${REDIS_URL:-}
+  MINIO_ENDPOINT: ${MINIO_ENDPOINT:-}
+  MINIO_BUCKET: ${MINIO_BUCKET:-processtwin}
+  MINIO_SECURE: ${MINIO_SECURE:-true}
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-}
+  MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-}
+
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
+  # One-shot schema migration. Production never auto-creates schema from the API process.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.api.prod
+    image: ${REGISTRY:-processtwin}/api:${TAG:-0.1.0}
+    command: ["python", "-m", "apps.api.processtwin_api.migration_runner"]
+    environment:
+      <<: *app-environment
+      # Two-role posture: migrations run as the table OWNER (DATABASE_ADMIN_URL),
+      # while api/train keep the non-owner DATABASE_URL so RLS policies are
+      # actually enforced (Postgres owners bypass RLS). Falls back to
+      # DATABASE_URL for single-role setups, where RLS stays dormant.
+      # Provision the app role with scripts/postgres_app_role.sql.
+      DATABASE_URL: ${DATABASE_ADMIN_URL:-${DATABASE_URL:?DATABASE_URL must be a postgresql:// URL}}
+    logging: *default-logging
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
   api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api.prod
+    image: ${REGISTRY:-processtwin}/api:${TAG:-0.1.0}
+    restart: unless-stopped
+    environment: *app-environment
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "${API_PUBLISHED_PORT:-8000}:8000"
+    read_only: true
+    tmpfs:
+      - /app/logs
+      - /app/tmp
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1G
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/live"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Synthetic demo plant: intentionally absent from production. The simulator refuses to
+  # run when ENVIRONMENT=production, so it is only available in docker-compose.yml.
+
+  # One-shot model training run, not a resident service. Invoke it explicitly:
+  #   docker compose -f docker-compose.prod.yml --profile training run --rm train
+  # Running it as a restarting service would retrain in a loop.
+  train:
+    profiles: ["training"]
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile.prod
+    image: ${REGISTRY:-processtwin}/worker:${TAG:-0.1.0}
+    command: ["python", "-m", "apps.worker.processtwin_worker.train"]
+    environment: *app-environment
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /app/logs
+      - /app/tmp
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile.prod
+      args:
+        # Next.js embeds this public origin during `pnpm run build`; a runtime
+        # environment value alone cannot reconfigure already-built browser JS.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?NEXT_PUBLIC_API_URL must be the public API origin}
+    image: ${REGISTRY:-processtwin}/web:${TAG:-0.1.0}
     restart: unless-stopped
     environment:
       ENVIRONMENT: production
-  web:
-    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_PUBLISHED_PORT:-3000}:3000"
+    read_only: true
+    tmpfs:
+      # next/image optimization writes to .next/cache; the root filesystem is read-only.
+      - /.next/cache
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

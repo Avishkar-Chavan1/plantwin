@@ -1,0 +1,32 @@
+# Build-context exclusions: keeps secrets, checkouts, virtualenvs and caches
+# out of the Docker build context (and out of image layers).
+.git
+.gitignore
+.github
+.env
+.env.*
+!.env.example
+.venv
+venv
+**/__pycache__
+**/*.py[cod]
+*.egg-info
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.pytest_temp
+node_modules
+**/node_modules
+**/.next
+pnpm-store
+.pnpm-store
+data
+backups
+*.db
+*.sqlite
+*.sqlite3
+*.log
+docs
+tests
+k8s
+scripts

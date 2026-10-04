@@ -1,0 +1,20 @@
+# Apply everything with:  kubectl apply -k k8s/base
+# Secrets are intentionally excluded: create processtwin-secrets first (see ../README.md).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: processtwin
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - api-deployment.yaml
+  - web-deployment.yaml
+
+# Retag images for your registry without editing the deployments:
+#   kustomize edit set image processtwin/api=ghcr.io/acme/processtwin-api:1.2.3
+images:
+  - name: processtwin/api
+    newTag: 0.1.0
+  - name: processtwin/web
+    newTag: 0.1.0

@@ -16,19 +16,30 @@ dependencies = [
   "psycopg[binary]>=3.2,<4",
   "alembic>=1.13,<2",
   "passlib[bcrypt]>=1.7,<2",
-  # Passlib 1.7.x requires bcrypt 3.x; bcrypt 4.x changed internal API.
-  "bcrypt>=3.2,<4",
+  # passlib 1.7.4 hashing and verification are verified against bcrypt 3.x and 4.x.
+  # The 3.x-only pin had no cp312 wheel, so a Python 3.12 install fell back to a source build.
+  "bcrypt>=3.2,<5",
   "PyJWT>=2.9,<3",
   "email-validator>=2.2,<3",
-  "numpy>=1.26,<2",
-  "scipy>=1.11,<1.14",
+  # Verified runtime: numpy 2.5.x / scipy 1.18.x. The former <2 / <1.14 caps contradicted
+  # the environment this suite is actually run and verified in.
+  "numpy>=2,<3",
+  "scipy>=1.14,<2",
   "scikit-learn>=1.5,<2",
   "prometheus-client>=0.20,<1",
   "python-multipart>=0.0.9,<1",
+  # Object storage is imported unconditionally by the API (dataset artifacts).
+  "minio>=7.2,<9",
+  # Production image entry point (Dockerfile.api.prod) runs gunicorn.
+  "gunicorn>=22,<24",
+  # Optional readiness probe target: reports Redis health when REDIS_URL is configured.
+  "redis>=5,<7",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3,<9", "pytest-asyncio>=0.24,<1", "httpx>=0.27,<1", "ruff>=0.6,<1", "mypy>=1.11,<2"]
+# pytest >=9.0.3 clears PYSEC-2026-1845 (advisory gate runs pip-audit in CI);
+# pytest-asyncio 1.x is the line compatible with the pytest 9 series.
+dev = ["pytest>=9.0.3,<10", "pytest-asyncio>=1.4,<2", "httpx>=0.27,<1", "ruff>=0.6,<1", "mypy>=1.11,<2"]
 mqtt = ["paho-mqtt>=2.1,<3"]
 opcua = ["asyncua>=1.1,<2"]
 parquet = ["pyarrow>=17,<25"]
@@ -41,6 +52,11 @@ include = ["apps*", "packages*", "connectors*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# The test temp root is resolved in tests/conftest.py: a fixed --basetemp (or the
+# fixed OS `pytest-of-<user>` root) is created with mode 0o700, which on Windows is an
+# owner-only ACL. If a different account on the host runs the suite first, every later
+# account fails at session start with access denied. The conftest picks a writable
+# per-account root instead, so this stays an ordinary `-q` invocation.
 addopts = "-q"
 
 [tool.ruff]
@@ -58,3 +74,9 @@ strict = true
 warn_unused_ignores = true
 exclude = ["migrations"]
 enable_incomplete_feature = ["NewGenericSyntax"]
+
+# Optional extras are imported behind runtime capability checks; they may be absent
+# from a minimal install (and pyarrow ships no stubs), so missing modules are tolerated.
+[[tool.mypy.overrides]]
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true

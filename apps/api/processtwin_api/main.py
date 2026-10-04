@@ -5,6 +5,7 @@ import csv
 import hmac
 import io
 import logging
+import os
 import re
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
@@ -68,7 +69,7 @@ from .models import (
     TwinState,
     User,
 )
-from .observability import configure_logging
+from .observability import RequestIdFilter, configure_logging, set_request_id
 from .quality import DataQualityService
 from .rate_limit import RATE_LIMITER
 from .time_utils import as_utc
@@ -91,20 +92,28 @@ class ApiError(HTTPException):
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     configure_logging(get_settings().log_level)
+    # Add request ID filter to root logger for correlation
+    logging.getLogger().addFilter(RequestIdFilter())
     # Migration is preferred in development and mandatory in production.
     if get_settings().auto_create_schema:
         Base.metadata.create_all(bind=engine)
-    yield
+    try:
+        yield
+    finally:
+        # Graceful shutdown: close database connections
+        engine.dispose()
+        logging.getLogger("processtwin.api").info("Application shutdown complete")
 
 
 def create_app() -> FastAPI:
     """Create the FastAPI application with current get_settings()."""
+    settings = get_settings()
     app = FastAPI(
         title="ProcessTwin API",
         version="0.1.0",
         lifespan=lifespan,
-        docs_url=None if get_settings().is_production else "/docs",
-        redoc_url=None if get_settings().is_production else "/redoc",
+        docs_url=None if settings.is_production else "/docs",
+        redoc_url=None if settings.is_production else "/redoc",
     )
     app.include_router(datasets_router)
     app.include_router(live_router)
@@ -112,7 +121,7 @@ def create_app() -> FastAPI:
     app.include_router(workflow_router)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=get_settings().cors_origins,
+        allow_origins=list(settings.cors_origins_parsed),
         allow_credentials=False,
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-Organization-ID", "X-Request-ID"],
@@ -132,7 +141,9 @@ async def request_context(request: Request, call_next: Any) -> Response:
     request_id = (
         supplied_request_id if _REQUEST_ID_RE.fullmatch(supplied_request_id) else uuid4().hex
     )
-    if request.method != "OPTIONS" and request.url.path not in {"/health", "/ready", "/metrics"}:
+    # Set request ID in context variable for logging correlation
+    set_request_id(request_id)
+    if request.method != "OPTIONS" and request.url.path not in {"/health", "/ready", "/metrics", "/live"}:
         client = request.client.host if request.client else "unknown"
         limit = (
             runtime_settings.login_rate_limit_requests
@@ -245,18 +256,62 @@ async def validation_error(request: Request, _: RequestValidationError) -> JSONR
     )
 
 
+@app.get("/live", tags=["system"])
+def liveness() -> dict[str, str]:
+    """Liveness probe - returns OK if the process is running.
+
+    This endpoint should be used for Kubernetes liveness probes.
+    It does not check external dependencies - only that the process is responsive.
+    """
+    return {"status": "alive", "service": "processtwin-api"}
+
+
 @app.get("/health", tags=["system"])
-def health() -> dict[str, str]:
-    return {"status": "ok", "service": "processtwin-api"}
+def health() -> dict[str, Any]:
+    """Health check - returns basic service status.
+
+    This endpoint provides a quick health overview without checking
+    external dependencies. Use /ready for dependency verification.
+    """
+    return {"status": "ok", "service": "processtwin-api", "version": "0.1.0"}
 
 
 @app.get("/ready", tags=["system"])
-def ready() -> dict[str, str]:
-    if not database_is_ready():
-        raise ApiError(
-            status.HTTP_503_SERVICE_UNAVAILABLE, "DATABASE_UNAVAILABLE", "Database is unavailable"
-        )
-    return {"status": "ready", "database": "ok"}
+def readiness() -> Response:
+    """Readiness probe - verifies all required dependencies are available.
+
+    This endpoint should be used for Kubernetes readiness probes.
+    It checks database connectivity and other required services.
+    """
+    checks: dict[str, str] = {}
+    all_ready = True
+
+    # Check database
+    if database_is_ready():
+        checks["database"] = "ok"
+    else:
+        checks["database"] = "unavailable"
+        all_ready = False
+
+    # Check Redis if configured (for rate limiting, caching)
+    redis_url = os.getenv("REDIS_URL")
+    if redis_url:
+        try:
+            import redis
+            client = redis.Redis.from_url(redis_url, socket_connect_timeout=2, socket_timeout=2)
+            client.ping()
+            checks["redis"] = "ok"
+        except Exception:
+            checks["redis"] = "unavailable"
+            all_ready = False
+    else:
+        checks["redis"] = "not_configured"
+
+    status_code = status.HTTP_200_OK if all_ready else status.HTTP_503_SERVICE_UNAVAILABLE
+    return JSONResponse(
+        status_code=status_code,
+        content={"status": "ready" if all_ready else "not_ready", "checks": checks},
+    )
 
 
 @app.get("/metrics", include_in_schema=False)
@@ -695,7 +750,7 @@ async def ingest_csv(
             session.rollback()
             if isinstance(exc, ApiError):
                 detail = exc.detail
-                message = detail["message"] if isinstance(detail, dict) else str(detail)  # type: ignore[index]
+                message = detail["message"] if isinstance(detail, dict) else str(detail)
             else:
                 message = str(exc)
             raise ApiError(422, "INVALID_CSV_ROW", f"Row {index}: {message}") from exc

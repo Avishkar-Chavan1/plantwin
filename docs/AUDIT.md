@@ -139,6 +139,89 @@ The following order keeps the advisory boundary intact and prevents later work f
 7. **Phase 5 — alarms, workflow, and explainability:** make the safe default `NO_RECOMMENDATION` when data/model quality is insufficient; retain human review and auditability.
 8. **Phases 6–8 — assurance, operations, and product:** add threat-model/control evidence, operational runbooks/dashboards/load-test results, then polish the UI and clean-clone deployment experience.
 
+## Baseline remediation (2026-10-03, later the same day)
+
+The Phase 0 gate failures above were fixed in this workspace and re-verified. The original
+findings are kept above as the audit record; the table below is the current state.
+
+| Required gate | Result | Evidence |
+| --- | --- | --- |
+| `make lint` / `ruff check apps packages connectors tests` | **PASSED** | 0 errors (was 14). |
+| `make typecheck` / `mypy apps packages connectors` | **PASSED** | 0 errors in 68 files (was 105 in 7). Verified both with and without the optional `pyarrow` extra. |
+| `make test` / `pytest` | **PASSED** | 113 passed, 0 failed, 0 skipped (was 57 passed / 11 failed, plus 4 modules that could not be imported). |
+| `docker compose -f docker-compose.prod.yml config` | **PASSED** | Validates when required variables are set; fails fast with an actionable message when they are not. |
+| `docker compose build` | **MOVED TO CI** | No Docker daemon is reachable on this host, so the `images` job in `.github/workflows/ci.yml` now builds the development API image and every production image, then boots the production API container and curls `/live`. |
+| Web type check | **PASSED** | `tsc --noEmit` passes. `next build` compiles and then fails only when copying traced files, because Windows refuses to create symlinks; CI runs the full build on Linux. |
+
+### What was fixed
+
+1. **P0 — undeclared runtime dependencies.** `connectors/object_storage.py` imports `minio`
+   unconditionally (the datasets router imports it, so the whole app failed to import), the
+   production image runs `gunicorn`, and `/ready` imports `redis`; none were declared in
+   `pyproject.toml`. All three are now base dependencies, which is what made 4 test modules
+   uncollectable and 5 API integration tests fail.
+2. **P0 — strict typing and lint.** Removed 25 stale `type: ignore` comments, fixed the OPC UA
+   coroutine signature, the readiness return type, the missing `state_values` annotation and
+   the redundant cast. Optional `pyarrow` imports now go through an `Any`-typed adapter
+   boundary so the gate is identical with and without the `parquet` extra.
+3. **P0 — fail-closed configuration.** The `.env.example` placeholder secrets were accepted at
+   startup; they are now rejected for `JWT_SECRET` and `METRICS_TOKEN`, with regression tests
+   in `tests/unit/test_config_hardening.py` covering placeholders, short secrets, production
+   PostgreSQL/HTTPS/demo-credential requirements, and one valid production configuration.
+4. **P0 — advisory boundary regression tests.** `tests/unit/test_read_only_boundary.py` proves
+   connector/gateway public APIs expose no write methods, acquisition sources never call a
+   control API (`.publish(`, `write_value(`, `call_method(`, ...), and the OpenAPI surface has
+   no control/command route.
+5. **Production deployment path.** `docker-compose.prod.yml` now has fail-fast `${VAR:?}`
+   required variables, an explicit one-shot `migrate` service that `api`/`web` wait on,
+   per-service `image:` tags, JSON log rotation, and `tmpfs` mounts for every writable path on
+   read-only roots. The former long-running `worker` service retrained in a crash loop because
+   `train` is a one-shot program; training is now behind a `training` profile and runs on
+   demand. The synthetic `simulator` was removed from production: it refuses to run with
+   `ENVIRONMENT=production`, so it would only have crash-looped.
+6. **Development compose path.** The API/demo-init defaulted `JWT_SECRET` to a value the app
+   rejects, and neither `simulator` nor `demo-init` received the environment their `Settings`
+   require (`jwt_secret`, `DEMO_EMAIL`, `DEMO_PASSWORD`) — `make demo` could not have started.
+   Both are now explicit and fail fast with an actionable message.
+7. **Container supply chain.** Added `.dockerignore` at the repo root and for `apps/web` so
+   `.env`, `.git`, `.venv`, `node_modules` and databases never enter a build context; the web
+   image pins `pnpm@10`, copies `.npmrc` before install, and `apps/web/public/` now exists so
+   the `COPY public` step succeeds.
+8. **Kubernetes.** Added `k8s/base/api-deployment.yaml` and `web-deployment.yaml` (probes,
+   resource requests/limits, non-root, read-only root filesystem, dropped capabilities,
+   `RuntimeDefault` seccomp, `automountServiceAccountToken: false`, explicit `emptyDir`
+   mounts, migration init container), a `kustomization.yaml`, a secret template documenting
+   the required keys, an aligned `configmap.yaml` whose keys match the `Settings` model, and
+   `k8s/README.md` with the deploy/verify procedure.
+9. **CI.** The verify job now runs `make typecheck` and installs every extra the suite touches;
+   the web job uses pnpm with the committed lockfile instead of `npm install`; the new `images`
+   job validates the production compose file, builds all images, and smoke-tests the
+   production API entry point.
+10. **Backup/restore scripts.** They only accepted `postgresql://user:pass@host:port/db`, but
+    the application's documented URL is `postgresql+psycopg://` and port-less URLs are valid,
+    so both scripts failed on the URL they were meant to protect. They now normalise the
+    driver suffix, use libpq URLs directly, verify the dump with `pg_restore --list`, preserve
+    `?sslmode=` parameters for the maintenance connection, and name archives `.dump.gz`
+    instead of pretending a custom-format dump is plain SQL.
+11. **Dependency pins.** `minio`, `gunicorn` and `redis` added; `bcrypt` relaxed to `<5`
+    (3.x has no cp312 wheel, so a Python 3.12 install fell back to a source build — passlib
+    1.7.4 hash *and* verify are verified against bcrypt 4.0.1); `numpy`/`scipy` pins now match
+    the environment the suite is actually verified in (numpy 2.5 / scipy 1.18) instead of
+    contradicting it.
+
+### Still open after remediation
+
+- Image builds and container runtime behaviour are proven in CI, not on this host (no Docker
+  daemon). The audit's requirement to build on a capable host is satisfied by the pipeline,
+  not by a local run.
+- PostgreSQL RLS, the migration upgrade/downgrade matrix and backup/restore are still untested
+  against a real PostgreSQL/Timescale instance.
+- OIDC, shared (Redis-backed) rate limiting, threat model, security scanning, SBOM and load
+  testing are unchanged P1/P2 items.
+- Every item in [ROADMAP_EXTERNAL.md](ROADMAP_EXTERNAL.md) remains open by definition; none of
+  the work above substitutes for a penetration test, HAZOP, plant data authorization, or an
+  independently run pilot.
+
 ## Non-software evidence boundary
 
 The items requiring customer authorization, a qualified security assessor, process engineers, or an operated deployment are tracked in [ROADMAP_EXTERNAL.md](ROADMAP_EXTERNAL.md). Their absence is a known limitation, not a claim that software can substitute for them.

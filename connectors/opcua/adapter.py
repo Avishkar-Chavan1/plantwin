@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Callable, Coroutine, Mapping
+from concurrent.futures import Future
 from datetime import UTC, datetime
 from importlib import import_module
 from typing import Any, Protocol
@@ -22,7 +23,7 @@ class OpcUaDataSource(Protocol):
     async def subscribe(
         self,
         node_ids: Mapping[str, tuple[str, str]],
-        on_message: Callable[[TelemetryMessage], Awaitable[None]],
+        on_message: Callable[[TelemetryMessage], Coroutine[Any, Any, None]],
     ) -> None: ...
 
 
@@ -38,7 +39,7 @@ class OpcUaConnectorDisabled:
     async def subscribe(
         self,
         node_ids: Mapping[str, tuple[str, str]],
-        on_message: Callable[[TelemetryMessage], Awaitable[None]],
+        on_message: Callable[[TelemetryMessage], Coroutine[Any, Any, None]],
     ) -> None:
         raise RuntimeError("OPC UA connector is not configured")
 
@@ -47,7 +48,7 @@ class _SubscriptionHandler:
     def __init__(
         self,
         node_map: Mapping[str, tuple[str, str]],
-        on_message: Callable[[TelemetryMessage], Awaitable[None]],
+        on_message: Callable[[TelemetryMessage], Coroutine[Any, Any, None]],
         monitor: SourceHealthMonitor,
     ) -> None:
         self.node_map = node_map
@@ -70,7 +71,9 @@ class _SubscriptionHandler:
                 received_at=received,
                 timestamp_source="SOURCE" if source_timestamp else "RECEIVED",
             )
-            future = asyncio.run_coroutine_threadsafe(self.on_message(message), self.loop)
+            future: Future[None] = asyncio.run_coroutine_threadsafe(
+                self.on_message(message), self.loop
+            )
             future.result(timeout=15)
             self.monitor.record_message(message, successful=True)
         except Exception as exc:
@@ -191,7 +194,7 @@ class OpcUaReadOnlyConnector:
     async def subscribe(
         self,
         node_ids: Mapping[str, tuple[str, str]],
-        on_message: Callable[[TelemetryMessage], Awaitable[None]],
+        on_message: Callable[[TelemetryMessage], Coroutine[Any, Any, None]],
         *,
         sampling_interval_ms: int = 1000,
     ) -> None:

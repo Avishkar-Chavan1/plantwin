@@ -3,29 +3,150 @@ on:
   pull_request:
   push:
     branches: [master, main]
+
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: {python-version: "3.12"}
-      - run: python -m pip install -e ".[dev,parquet]"
+        with: { python-version: "3.12" }
+      # Every extra the test-suite touches is installed so CI matches the verified env.
+      - run: python -m pip install -e ".[dev,parquet,mqtt,opcua]"
       - run: make lint
+      - run: make typecheck
       - run: make test
+
   web:
     runs-on: ubuntu-latest
-    defaults: {run: {working-directory: apps/web}}
+    defaults: { run: { working-directory: apps/web } }
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 10 }
       - uses: actions/setup-node@v4
-        with: {node-version: "22", cache: npm, cache-dependency-path: apps/web/package.json}
-      - run: npm install
-      - run: npm run lint
-      - run: npm test
-      - run: npm run build
-  docker:
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run lint
+      - run: pnpm run test
+      - run: pnpm run build
+
+  images:
+    runs-on: ubuntu-latest
+    env:
+      # Interpolation only: these satisfy ${VAR:?...} while images are built.
+      DATABASE_URL: postgresql+psycopg://ci:ci@db.example.com:5432/ci
+      JWT_SECRET: ci-interpolation-secret-0123456789-abcdefg
+      METRICS_TOKEN: ci-interpolation-metrics-0123456789-abcdefg
+      CORS_ORIGINS: https://ci.example.com
+      NEXT_PUBLIC_API_URL: https://ci.example.com
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate production compose file
+        run: docker compose -f docker-compose.prod.yml config --quiet
+      - name: Build development API image
+        run: docker build -f Dockerfile.api .
+      - name: Build production images
+        run: docker compose -f docker-compose.prod.yml build
+      - name: Smoke-test the production API entry point
+        run: |
+          docker run -d --name api-smoke \
+            -e ENVIRONMENT=production \
+            -e DATABASE_URL="$DATABASE_URL" \
+            -e JWT_SECRET="$JWT_SECRET" \
+            -e METRICS_TOKEN="$METRICS_TOKEN" \
+            -e CORS_ORIGINS="$CORS_ORIGINS" \
+            processtwin/api:0.1.0
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/live; then
+              echo "liveness OK"
+              docker rm -f api-smoke >/dev/null
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "API image did not become live:"
+          docker logs api-smoke
+          docker rm -f api-smoke >/dev/null || true
+          exit 1
+
+  # Blocking vulnerability gate: any advisory against the installed environment
+  # fails the build. Dependabot (.github/dependabot.yml) proposes the fixes.
+  dependency-audit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -f Dockerfile.api .
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: python -m pip install -e ".[dev,parquet,mqtt,opcua]"
+      - name: Audit installed dependencies for known vulnerabilities
+        run: |
+          python -m pip install pip-audit
+          pip-audit --progress-spinner off
+
+  # Production-posture proof that cannot run on a Windows developer host:
+  #   1. alembic migrations against real TimescaleDB (hypertable/compression/
+  #      retention migration executes instead of being skipped)
+  #   2. RLS enforcement against a NON-OWNER application role (owners bypass RLS,
+  #      so single-role setups silently disable tenant isolation)
+  #   3. end-to-end API auth flow while RLS is enforced
+  #   4. backup/restore roundtrip with the real pg_dump/pg_restore scripts
+  postgres:
+    runs-on: ubuntu-latest
+    env:
+      ENVIRONMENT: test
+      DATABASE_ADMIN_URL: postgresql+psycopg://postgres:processtwin@localhost:5432/processtwin
+      LIBPQ_URL: postgresql://postgres:processtwin@localhost:5432/processtwin
+      TEST_DATABASE_URL: postgresql+psycopg://processtwin_app:ci-app-role-Passw0rd@localhost:5432/processtwin
+      TEST_DATABASE_ADMIN_URL: postgresql+psycopg://postgres:processtwin@localhost:5432/processtwin
+      APP_ROLE_PASSWORD: ci-app-role-Passw0rd
+    services:
+      db:
+        # Pinned major: latest-pg16 tracks Timescale releases on PostgreSQL 16.
+        image: timescale/timescaledb:latest-pg16
+        env:
+          POSTGRES_PASSWORD: processtwin
+          POSTGRES_DB: processtwin
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Install PostgreSQL client tools (psql/pg_dump/pg_restore)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+      - run: python -m pip install -e ".[dev,parquet,mqtt,opcua]"
+      - name: Provision the non-owner application role before migrations
+        run: >-
+          psql "$LIBPQ_URL" -v ON_ERROR_STOP=1
+          -v app_role=processtwin_app
+          -v app_password="$APP_ROLE_PASSWORD"
+          -f scripts/postgres_app_role.sql
+      - name: Upgrade schema as the database owner through the production migration runner
+        run: DATABASE_URL="$DATABASE_ADMIN_URL" python -m apps.api.processtwin_api.migration_runner
+      - name: RLS enforcement and migration tests as the app role
+        run: pytest tests/integration/test_postgres_rls.py tests/integration/test_migrations.py -q
+      - name: Backup/restore roundtrip with the production scripts
+        run: |
+          psql "$LIBPQ_URL" -v ON_ERROR_STOP=1 -c "CREATE TABLE ci_roundtrip_probe(id integer PRIMARY KEY); INSERT INTO ci_roundtrip_probe VALUES (42);"
+          bash scripts/backup_postgres.sh "$LIBPQ_URL"
+          latest="$(ls -t backups/*.dump.gz | head -1)"
+          psql "$LIBPQ_URL" -v ON_ERROR_STOP=1 -c "DROP TABLE ci_roundtrip_probe;"
+          CONFIRM=yes bash scripts/restore_postgres.sh "$latest" "$LIBPQ_URL"
+          # pg_dump runs with --no-privileges for portability, so the app-role
+          # grants must be re-applied after every restore (documented runbook step).
+          psql "$LIBPQ_URL" -v ON_ERROR_STOP=1 \
+            -v app_role=processtwin_app \
+            -v app_password="$APP_ROLE_PASSWORD" \
+            -f scripts/postgres_app_role.sql
+          test "$(psql -tAc 'SELECT id FROM ci_roundtrip_probe' "$LIBPQ_URL")" = "42"
+      - name: API still works against the restored database
+        run: pytest tests/integration/test_postgres_rls.py -q

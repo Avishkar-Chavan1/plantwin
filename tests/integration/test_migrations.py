@@ -34,3 +34,11 @@ def test_security_migration_follows_live_readonly_workflow() -> None:
     revision = scripts.get_revision("0006_security_rls_refresh_tokens")
     assert revision is not None
     assert revision.down_revision == "0005_live_readonly_workflow"
+
+
+def test_timescale_migration_follows_object_storage() -> None:
+    config = Config("alembic.ini")
+    scripts = ScriptDirectory.from_config(config)
+    revision = scripts.get_revision("660c4eb0949d")
+    assert revision is not None
+    assert revision.down_revision == "0007_object_storage_chunked_imports"

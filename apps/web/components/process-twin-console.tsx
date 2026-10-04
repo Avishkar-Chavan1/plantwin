@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { HistoricalDataExplorer } from "./historical-data-explorer";
 import { LiveDataSources } from "./live-data-sources";
+import { ModelGovernance } from "./model-governance";
 
 type Reading = { value: number; unit: string; quality_status: string; source: string; timestamp: string };
 type Summary = {
@@ -95,6 +96,8 @@ export function ProcessTwinConsole({ initialView }: { initialView: string }) {
   if (initialView === "data") return <HistoricalDataExplorer token={token} organization={organization!} />;
 
   if (initialView === "data-sources") return <LiveDataSources token={token} organization={organization!} />;
+
+  if (initialView === "models") return <ModelGovernance token={token} organization={organization!} />;
 
   const m = summary?.measurements ?? {};
   return <main className="shell"><aside><div className="logo"><span>◈</span> ProcessTwin</div><p className="tenant">SIMULATION ENVIRONMENT</p><nav>{navigation.map((entry) => <a className={initialView === entry ? "active" : ""} href={`/${entry === "dashboard" ? "dashboard" : entry}`} key={entry}>{entry.replaceAll("-", " ")}</a>)}</nav><div className="operator"><span className="dot" /> Human-in-the-loop<br /><small>No control connection</small></div></aside><section className="workspace"><header><div><p className="eyebrow">DEMO CHEMICAL PLANT / {summary?.equipment?.tag ?? "—"}</p><h1>{initialView.replaceAll("-", " ")}</h1></div><div className="header-status"><span className="pill good">{summary?.plant_health ?? "LOADING"}</span><span>{summary?.source_mode === "LIVE_READ_ONLY" ? "LIVE READ-ONLY MODE" : summary?.source_mode === "HISTORICAL" ? "HISTORICAL MODE" : summary?.source_mode === "MIXED_DATA_BLOCKED" ? "MIXED DATA BLOCKED" : "SIMULATION MODE"}</span></div></header><p className="notice">{summary?.safety_notice}</p><p className="message">{message}</p>

@@ -21,4 +21,5 @@ These activities cannot be truthfully completed by repository code alone. They a
 - [ ] Provision a supported PostgreSQL/Timescale environment and object storage; execute a backup and restore exercise with measured recovery evidence.
 - [ ] Supply a Docker/Kubernetes build environment with approved registry access, image signing/provenance policy, network controls, TLS termination, monitoring, and alert delivery.
 - [ ] Agree service objectives, retention period, escalation owners, on-call coverage, air-gapped update path if relevant, and incident/rollback authority.
+- [ ] Configure Alertmanager routing and notification channels for the rules in `observability/prometheus-rules.yml`, and replace the TBD escalation placeholders in `docs/OPERATIONS.md` with named owners.
 - [ ] Perform a representative load test in an approved non-production environment; publish the exact workload, hardware/runtime, results, and limits.

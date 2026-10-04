@@ -11,15 +11,6 @@ from statistics import median
 from typing import Any, BinaryIO
 from uuid import UUID, uuid4
 
-try:
-    import pyarrow as pa  # type: ignore[import-untyped]
-    import pyarrow.parquet as pq  # type: ignore[import-untyped]
-    PYARROW_AVAILABLE = True
-except ImportError:
-    pq = None
-    pa = None
-    PYARROW_AVAILABLE = False
-
 from apps.api.processtwin_api.models import QualityStatusName
 from connectors.historical import read_historical_source
 from connectors.object_storage import (
@@ -32,6 +23,25 @@ from packages.data_ingestion.pipeline import (
     HistoricalObservation,
 )
 from packages.units import si_unit, to_si
+
+
+def _load_pyarrow() -> tuple[Any, Any]:
+    """Import the optional Parquet stack, or return ``(None, None)`` when unavailable.
+
+    pyarrow ships no type information, so the adapter boundary is deliberately typed as
+    ``Any``: the strict type gate then looks identical whether or not the ``parquet``
+    extra is installed.
+    """
+    try:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+    except ImportError:
+        return None, None
+    return pa, pq
+
+
+pa, pq = _load_pyarrow()
+PYARROW_AVAILABLE = pa is not None and pq is not None
 
 
 @dataclass

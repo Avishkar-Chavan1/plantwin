@@ -33,7 +33,9 @@ services:
       dockerfile: Dockerfile.api
     environment:
       DATABASE_URL: postgresql+psycopg://processtwin:processtwin_dev_only@postgres:5432/processtwin
-      JWT_SECRET: ${JWT_SECRET:-development-only-secret-change-me}
+      # No development default: an insecure signing key is rejected at startup.
+      # Generate one in .env: python -c "import secrets; print(secrets.token_urlsafe(48))"
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env}
       CORS_ORIGINS: http://localhost:3000
       MLFLOW_TRACKING_URI: http://mlflow:5000
     ports: ["8000:8000"]
@@ -54,7 +56,10 @@ services:
       ["/bin/sh", "-c", "alembic upgrade head && python -m apps.simulator.processtwin_simulator.seed_demo --hours 168 && python -m apps.worker.processtwin_worker.train"]
     environment:
       DATABASE_URL: postgresql+psycopg://processtwin:processtwin_dev_only@postgres:5432/processtwin
-      JWT_SECRET: ${JWT_SECRET:-development-only-secret-change-me}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env}
+      # seed_demo refuses to run without an explicit demo identity (never production).
+      DEMO_EMAIL: ${DEMO_EMAIL:-}
+      DEMO_PASSWORD: ${DEMO_PASSWORD:-}
     depends_on:
       postgres: {condition: service_healthy}
   simulator:
@@ -63,6 +68,7 @@ services:
       dockerfile: apps/simulator/Dockerfile
     environment:
       DATABASE_URL: postgresql+psycopg://processtwin:processtwin_dev_only@postgres:5432/processtwin
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env}
     depends_on:
       demo-init: {condition: service_completed_successfully}
   web:

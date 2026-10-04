@@ -1,0 +1,116 @@
+# Prometheus alerting rules for ProcessTwin.
+#
+# Every expression references a metric the API really exposes (verified against
+# /metrics): processtwin_api_requests_total, processtwin_api_request_seconds,
+# processtwin_sensor_readings_total, and the prometheus_client process exporters.
+# Assumes the API is scraped with its default job label; adjust `job` matchers
+# to your Prometheus scrape config.
+#
+# Load with:
+#   promtool check rules observability/prometheus-rules.yml
+#   # prometheus.yml: rule_files: ["observability/prometheus-rules.yml"]
+#
+# Thresholds are starting values, not approved plant alarm limits: page/record
+# routing and tuning are an operations decision (docs/OPERATIONS.md, and
+# docs/ROADMAP_EXTERNAL.md for alert delivery).
+
+groups:
+  - name: processtwin-availability
+    rules:
+      - alert: ProcessTwinApiDown
+        expr: up{job=~".*processtwin.*|.*api.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API target unreachable"
+          description: "Prometheus has failed to scrape {{ $labels.instance }} for 2 minutes."
+          runbook: "Check container/pod status, then /live and /ready on the instance."
+
+      - alert: ProcessTwinNotReady
+        expr: increase(processtwin_api_requests_total{status="503"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API answering /ready with 503"
+          description: "Readiness is failing (database or configured Redis unavailable) on {{ $labels.instance }}."
+          runbook: "curl -s /ready for the failing checks; verify DATABASE_URL and REDIS_URL."
+
+  - name: processtwin-latency-and-errors
+    rules:
+      - alert: ProcessTwinHighErrorRate
+        expr: |
+          sum by (job) (rate(processtwin_api_requests_total{status=~"5.."}[5m]))
+            /
+          sum by (job) (rate(processtwin_api_requests_total[5m]))
+            > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 5% of API requests are 5xx"
+          description: "5xx ratio is {{ $value | humanizePercentage }} over the last 10 minutes."
+          runbook: "Check API logs for 'unhandled request error' with request IDs; verify database health."
+
+      - alert: ProcessTwinLatencyHigh
+        expr: |
+          histogram_quantile(0.95,
+            sum by (job, le) (rate(processtwin_api_request_seconds_bucket[5m]))
+          ) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API p95 latency above 1s"
+          description: "p95 is {{ $value }}s over the last 10 minutes."
+          runbook: "Identify slow paths from the histogram; check database load and connection pool saturation."
+
+      - alert: ProcessTwinRateLimitedSustained
+        expr: sum by (job) (increase(processtwin_api_requests_total{status="429"}[10m])) > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sustained 429 responses"
+          description: "{{ $value }} rate-limited responses in 10 minutes."
+          runbook: "Legitimate client overload or credential-stuffing on /auth/login; check client IPs and adjust RATE_LIMIT_* if justified."
+
+  - name: processtwin-ingestion
+    rules:
+      - alert: ProcessTwinIngestionStalled
+        expr: sum(increase(processtwin_sensor_readings_total[15m])) == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No sensor readings persisted for 30 minutes"
+          description: "Ingestion counters have not moved in 30 minutes."
+          runbook: "Expected during idle windows; disable or re-baseline if this instance ingests continuously. Otherwise check upstream connectors."
+
+      - alert: ProcessTwinIngestionQualityDegraded
+        expr: |
+          sum(increase(processtwin_sensor_readings_total{quality!="GOOD"}[15m]))
+            /
+          sum(increase(processtwin_sensor_readings_total[15m]))
+            > 0.2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 20% of persisted readings are not GOOD"
+          description: "Non-GOOD quality ratio is {{ $value | humanizePercentage }}."
+          runbook: "Review quality events in the dashboard; check sensor mappings and limits with a process engineer."
+
+  - name: processtwin-resources
+    rules:
+      - alert: ProcessTwinHighMemory
+        # Compose/k8s cap the API at 1GiB; alert before the OOM kill.
+        expr: process_resident_memory_bytes > 900 * 1024 * 1024
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API resident memory above 900MiB"
+          description: "{{ $labels.instance }} is at {{ $value | humanize1024 }}B (limit 1Gi)."
+          runbook: "Look for large uploads/import jobs; raise limits only with evidence."

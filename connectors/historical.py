@@ -37,11 +37,13 @@ class CsvHistoricalSource:
 class ParquetHistoricalSource:
     def read(self, raw: bytes) -> list[dict[str, object]]:
         try:
-            import pyarrow.parquet as parquet  # type: ignore[import-untyped]
+            import pyarrow.parquet as parquet
         except ImportError as exc:
             raise RuntimeError("Parquet support requires the 'parquet' project extra") from exc
+        # pyarrow ships no type information; keep the optional boundary typed as Any.
+        read_table: Any = parquet.read_table
         try:
-            table = parquet.read_table(io.BytesIO(raw))
+            table = read_table(io.BytesIO(raw))
             return [dict(row) for row in table.to_pylist()]
         except Exception as exc:
             raise ValueError("Parquet file could not be decoded") from exc

@@ -201,7 +201,7 @@ def volumetric_flow_m3_s(
     if not np.isfinite(flow).all() or np.any(flow < 0):
         raise ValueError("Feed flow values must be finite and non-negative")
     if normalized_unit == "m3/s":
-        return cast(np.ndarray, flow)
+        return flow
     if normalized_unit == "kg/s":
         if not isfinite(density_kg_m3) or density_kg_m3 <= 0:
             raise ValueError("A finite positive fluid density is required to convert kg/s to m³/s")

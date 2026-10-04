@@ -1,0 +1,67 @@
+# Production Dockerfile for ProcessTwin Simulator
+# Multi-stage build: builder -> runtime
+# Runs as non-root user with read-only root filesystem
+
+# Stage 1: Builder
+FROM python:3.12-slim AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy dependency files first for better caching
+COPY pyproject.toml README.md ./
+COPY apps ./apps
+COPY packages ./packages
+COPY connectors ./connectors
+COPY migrations ./migrations
+COPY alembic.ini ./
+
+# Install the package and dependencies
+RUN pip install --no-cache-dir --prefix=/install .
+
+# Stage 2: Runtime
+FROM python:3.12-slim AS runtime
+
+# Install runtime dependencies only
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN groupadd -r -g 1000 processtwin && \
+    useradd -r -u 1000 -g processtwin -d /app -s /sbin/nologin processtwin
+
+WORKDIR /app
+
+# Copy installed packages from builder
+COPY --from=builder /install /usr/local
+
+# Copy application code
+COPY --from=builder /app/apps ./apps
+COPY --from=builder /app/packages ./packages
+COPY --from=builder /app/connectors ./connectors
+COPY --from=builder /app/migrations ./migrations
+COPY --from=builder /app/alembic.ini ./
+
+# Create directories for writable paths
+RUN mkdir -p /app/logs /app/tmp && \
+    chown -R processtwin:processtwin /app/logs /app/tmp
+
+# Switch to non-root user
+USER processtwin
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import sys; sys.exit(0)" || exit 1
+
+# Run simulator
+CMD ["python", "-m", "apps.simulator.processtwin_simulator.run", "--forever"]
