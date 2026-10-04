@@ -15,20 +15,21 @@ services:
   redis:
     image: redis:7-alpine
     ports: ["6379:6379"]
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address :9001
-    environment:
-      MINIO_ROOT_USER: processtwin-dev
-      MINIO_ROOT_PASSWORD: processtwin-dev-password
-    ports: ["9000:9000", "9001:9001"]
-    volumes: [minio_data:/data]
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 10s
+  # minio disabled: repository access denied. Use local S3-compatible storage or self-host MinIO.
+  # minio:
+  #   image: minio/minio:latest
+  #   command: server /data --console-address :9001
+  #   environment:
+  #     MINIO_ROOT_USER: processtwin-dev
+  #     MINIO_ROOT_PASSWORD: processtwin-dev-password
+  #   ports: ["9000:9000", "9001:9001"]
+  #   volumes: [minio_data:/data]
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 5
+  #     start_period: 10s
   mlflow:
     image: ghcr.io/mlflow/mlflow:v2.16.2
     command: mlflow server --host 0.0.0.0 --port 5000
@@ -94,4 +95,4 @@ services:
     depends_on: [prometheus]
 volumes:
   postgres_data:
-  minio_data:
+  # minio_data: (disabled)
