@@ -91,7 +91,7 @@ export function ProcessTwinConsole({ initialView }: { initialView: string }) {
     setMessage(`Imported ${data.version.row_count} historical rows as dataset version ${data.version.version}.`);
   }
 
-  if (!token || initialView === "login") return <main className="login"><section className="brand"><p className="eyebrow">PROCESS TWIN / REFERENCE PLANT</p><h1>Physics-informed<br />industrial intelligence.</h1><p>Monitor, simulate and optimize—without sending control commands to the plant.</p></section><form className="login-card" onSubmit={login}><h2>Welcome back</h2><label>Email<input name="email" type="email" defaultValue="engineer@processtwin.demo" required /></label><label>Password<input name="password" type="password" defaultValue="ChangeMeDemoOnly!" required /></label><button type="submit">Sign in to demo</button><small>{message}</small></form></main>;
+  if (!token || initialView === "login") return <main className="login"><section className="brand"><p className="eyebrow">PROCESS TWIN / REFERENCE PLANT</p><h1>Physics-informed<br />industrial intelligence.</h1><p>Monitor, simulate and optimize—without sending control commands to the plant.</p></section><form className="login-card" onSubmit={login}><h2>Welcome back</h2><label>Email<input name="email" type="email" defaultValue="engineer@processtwin.demo" required /></label><label>Password<input name="password" type="password" defaultValue="demo-password-123!" required /></label><button type="submit">Sign in to demo</button><small>{message}</small></form></main>;
 
   if (initialView === "data") return <HistoricalDataExplorer token={token} organization={organization!} />;
 
