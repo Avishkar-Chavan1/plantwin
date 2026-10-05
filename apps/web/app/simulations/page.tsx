@@ -3,7 +3,7 @@
 import { useDashboardData } from "../../components/use-dashboard-data";
 import { ProcessTwinConsole } from "../../components/process-twin-console";
 
-export default function Dashboard() {
+export default function Simulations() {
   const { summary, plants, isLoading, message, setMessage, token, organization } = useDashboardData();
   const headers = token && organization
     ? { Authorization: `Bearer ${token}`, "X-Organization-ID": organization, "Content-Type": "application/json" }
@@ -15,7 +15,7 @@ export default function Dashboard() {
 
   return (
     <ProcessTwinConsole
-      initialView="dashboard"
+      initialView="simulations"
       token={token}
       organization={organization}
       headers={headers!}

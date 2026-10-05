@@ -1,24 +1,30 @@
 "use client";
 
-import { useEffect, useState, use } from "react";
-import { useAuth } from "../../components/auth-provider";
-import { ProcessTwinConsole } from "../../components/process-twin-console";
+import { useEffect, useState } from "react";
+import { useAuth } from "./auth-provider";
 
-function ProductViewContent({ params }: { params: Promise<{ view: string[] }> }) {
+const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+interface DashboardData {
+  summary: any;
+  plants: any[];
+  isLoading: boolean;
+  message: string;
+  setMessage: (msg: string) => void;
+  token: string | null;
+  organization: string | null;
+}
+
+export function useDashboardData(): DashboardData {
   const { token, organization, isLoading } = useAuth();
   const [summary, setSummary] = useState<any>(null);
   const [plants, setPlants] = useState<any[]>([]);
   const [message, setMessage] = useState("");
   const [isLoadingData, setIsLoadingData] = useState(true);
 
-  const resolvedParams = use(params);
-  const initialView = resolvedParams.view[0] ?? "dashboard";
-
   const headers = token && organization
     ? { Authorization: `Bearer ${token}`, "X-Organization-ID": organization, "Content-Type": "application/json" }
     : undefined;
-
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
   useEffect(() => {
     if (!headers) return;
@@ -43,24 +49,13 @@ function ProductViewContent({ params }: { params: Promise<{ view: string[] }> })
     loadData();
   }, [headers]);
 
-  if (isLoading || isLoadingData || !token || !organization) {
-    return <div className="console-loading">Loading...</div>;
-  }
-
-  return (
-    <ProcessTwinConsole
-      initialView={initialView}
-      token={token}
-      organization={organization}
-      headers={headers!}
-      summary={summary}
-      plants={plants}
-      setMessage={setMessage}
-      isLoading={false}
-    />
-  );
-}
-
-export default async function ProductView({ params }: { params: Promise<{ view: string[] }> }) {
-  return <ProductViewContent params={params} />;
+  return {
+    summary,
+    plants,
+    isLoading: isLoading || isLoadingData,
+    message,
+    setMessage,
+    token,
+    organization,
+  };
 }
