@@ -3,6 +3,7 @@
 import { useEffect, useState, use } from "react";
 import { useAuth } from "../../components/auth-provider";
 import { ProcessTwinConsole } from "../../components/process-twin-console";
+import { AuthGuard } from "../../components/auth-guard";
 
 function ProductViewContent({ params }: { params: Promise<{ view: string[] }> }) {
   const { token, organization, isLoading } = useAuth();
@@ -14,14 +15,11 @@ function ProductViewContent({ params }: { params: Promise<{ view: string[] }> })
   const resolvedParams = use(params);
   const initialView = resolvedParams.view[0] ?? "dashboard";
 
-  const headers = token && organization
-    ? { Authorization: `Bearer ${token}`, "X-Organization-ID": organization, "Content-Type": "application/json" }
-    : undefined;
+  const headers = { Authorization: `Bearer ${token!}`, "X-Organization-ID": organization!, "Content-Type": "application/json" };
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
   useEffect(() => {
-    if (!headers) return;
     const loadData = async () => {
       setIsLoadingData(true);
       try {
@@ -43,16 +41,16 @@ function ProductViewContent({ params }: { params: Promise<{ view: string[] }> })
     loadData();
   }, [headers]);
 
-  if (isLoading || isLoadingData || !token || !organization) {
+  if (isLoading || isLoadingData) {
     return <div className="console-loading">Loading...</div>;
   }
 
   return (
     <ProcessTwinConsole
       initialView={initialView}
-      token={token}
-      organization={organization}
-      headers={headers!}
+      token={token!}
+      organization={organization!}
+      headers={headers}
       summary={summary}
       plants={plants}
       setMessage={setMessage}
@@ -62,5 +60,9 @@ function ProductViewContent({ params }: { params: Promise<{ view: string[] }> })
 }
 
 export default async function ProductView({ params }: { params: Promise<{ view: string[] }> }) {
-  return <ProductViewContent params={params} />;
+  return (
+    <AuthGuard>
+      <ProductViewContent params={params} />
+    </AuthGuard>
+  );
 }

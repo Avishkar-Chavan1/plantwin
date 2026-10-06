@@ -46,7 +46,6 @@ type Calibration = {
 type RoleInfo = { role: string };
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-const navigation = ["dashboard", "plants", "equipment", "sensors", "digital-twins", "simulations", "optimization", "recommendations", "alerts", "models", "data", "data-sources", "settings", "audit-log"];
 
 function numericEntries(metrics: Record<string, unknown>): Array<[string, number]> {
   const flat: Array<[string, number]> = [];
@@ -160,12 +159,11 @@ export function ModelGovernance({ token, organization }: { token: string; organi
     await reload();
   }
 
-  return <main className="shell">
-    <aside><div className="logo"><span>◈</span> ProcessTwin</div><p className="tenant">MODEL GOVERNANCE</p><nav>{navigation.map((entry) => <a className={entry === "models" ? "active" : ""} href={`/${entry}`} key={entry}>{entry.replaceAll("-", " ")}</a>)}</nav><div className="operator"><span className="dot" /> Role: {role || "…"}<small>No automatic promotion</small></div></aside>
-    <section className="workspace">
-      <header><div><p className="eyebrow">REGISTRY / EVALUATION / DRIFT</p><h1>Model governance</h1></div><span className="pill">HUMAN VALIDATION REQUIRED</span></header>
+  return <div className="model-governance-view">
+      <section className="panel model-notice"><p className="eyebrow">REGISTRY / EVALUATION / DRIFT</p><h2>Model governance</h2><span className="pill">HUMAN VALIDATION REQUIRED</span>
       <p className="notice">Lifecycle: CALIBRATED → EVALUATED → VALIDATION → VALIDATED → STAGING → PRODUCTION → RETIRED. Validation needs an independent evaluation with explicit acceptance limits; staging and promotion are OWNER/ADMIN actions recorded in the audit log. Drift events never retrain or replace a production model.</p>
       <p className="message">{message}</p>
+      </section>
 
       <section className="panel"><div className="panel-title"><div><p className="eyebrow">MODEL VERSIONS</p><h2>Registry</h2></div><button type="button" className="secondary" onClick={() => void reload()}>Refresh</button></div>
         {models.length ? <div style={{ overflowX: "auto" }}><table style={{ width: "100%", textAlign: "left" }}><thead><tr>{["Model", "Version", "Type", "Status", "Metrics", "Envelope", "Git", "Created", ""].map((text) => <th key={text} style={{ padding: 9 }}>{text}</th>)}</tr></thead><tbody>{models.map((entry) => <tr key={entry.id} style={entry.id === selectedId ? { outline: "1px solid #60d5c6" } : undefined}>
@@ -228,6 +226,5 @@ export function ModelGovernance({ token, organization }: { token: string; organi
           <td>{new Date(item.created_at).toLocaleString()}</td>
         </tr>)}</tbody></table></div> : <p>No calibration runs recorded for this tenant.</p>}
       </section>
-    </section>
-  </main>;
+  </div>;
 }

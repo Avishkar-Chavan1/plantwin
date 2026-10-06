@@ -1,14 +1,24 @@
 "use client";
 
-import { FormEvent, useState } from "react";
-import { useRouter } from "next/navigation";
-import { useAuth } from "../../components/auth-provider";
+import { FormEvent, useState, useEffect, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useAuth } from "@/components/auth-provider";
 
-export default function Login() {
-  const { login, isLoading } = useAuth();
+function LoginForm() {
   const router = useRouter();
-  const [message, setMessage] = useState("Sign in with the documented demo account to inspect simulated CSTR R-101 data.");
+  const searchParams = useSearchParams();
+  const { login } = useAuth();
+  const [message, setMessage] = useState("Sign in to access your organization’s read-only process intelligence workspace.");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [redirectTo, setRedirectTo] = useState("/dashboard");
+
+  // Get redirect from search params (set by middleware) - use useEffect to avoid render-phase state update
+  useEffect(() => {
+    const redirectParam = searchParams?.get("redirect");
+    if (redirectParam) {
+      setRedirectTo(redirectParam);
+    }
+  }, [searchParams]);
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -22,34 +32,19 @@ export default function Login() {
     const password = form.get("password") as string;
 
     const result = await login(email, password);
-
-    if (result.success) {
-      setMessage("Connected to the simulated demonstration tenant.");
-      router.push("/dashboard");
-      router.refresh();
-    } else {
-      setMessage(result.error ?? "Sign-in failed. Confirm that demo data has been seeded.");
+    if (!result.success) {
+      setMessage(result.error ?? "Sign-in failed. Please try again.");
       setIsSubmitting(false);
+      return;
     }
-  }
-
-  if (isLoading) {
-    return (
-      <main className="login-loading">
-        <section className="brand">
-          <p className="eyebrow">PROCESS TWIN / REFERENCE PLANT</p>
-          <h1>Physics-informed<br />industrial intelligence.</h1>
-          <p>Monitor, simulate and optimize—without sending control commands to the plant.</p>
-        </section>
-        <div className="loading-spinner">Loading...</div>
-      </main>
-    );
+    router.replace(redirectTo.startsWith("/") ? redirectTo : "/dashboard");
+    router.refresh();
   }
 
   return (
     <main className="login">
       <section className="brand">
-        <p className="eyebrow">PROCESS TWIN / REFERENCE PLANT</p>
+        <p className="eyebrow">PROCESS INTELLIGENCE PLATFORM</p>
         <h1>Physics-informed<br />industrial intelligence.</h1>
         <p>Monitor, simulate and optimize—without sending control commands to the plant.</p>
       </section>
@@ -69,5 +64,13 @@ export default function Login() {
         <small>{message}</small>
       </form>
     </main>
+  );
+}
+
+export default function Login() {
+  return (
+    <Suspense fallback={<div className="login"><div>Loading...</div></div>}>
+      <LoginForm />
+    </Suspense>
   );
 }

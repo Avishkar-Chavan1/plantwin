@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, ReactNode } from "react";
+import { useEffect, useState, useCallback, ReactNode, useMemo } from "react";
 import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
 import { useAuth } from "./auth-provider";
@@ -37,26 +37,30 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-  const headers = token && organization
-    ? { Authorization: `Bearer ${token}`, "X-Organization-ID": organization, "Content-Type": "application/json" }
-    : undefined;
+  // Memoize headers so it doesn't change every render
+  const headers = useMemo(() =>
+    token && organization
+      ? { Authorization: `Bearer ${token}`, "X-Organization-ID": organization, "Content-Type": "application/json" }
+      : undefined,
+    [token, organization]
+  );
 
   const loadSummary = useCallback(async () => {
     if (!headers) return;
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"}/api/v1/dashboard/summary`, { headers });
+      const response = await fetch(`${apiUrl}/api/v1/dashboard/summary`, { headers });
       if (response.ok) {
         setSummary(await response.json());
       }
     } catch {
       // ignore
     }
-  }, [headers]);
+  }, [headers, apiUrl]);
 
   const loadPlants = useCallback(async () => {
     if (!headers) return;
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"}/api/v1/plants`, { headers });
+      const response = await fetch(`${apiUrl}/api/v1/plants`, { headers });
       if (response.ok) {
         const data = await response.json();
         setPlants(data.items ?? []);
@@ -64,7 +68,7 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
     } catch {
       // ignore
     }
-  }, [headers]);
+  }, [headers, apiUrl]);
 
   useEffect(() => {
     if (headers) {
@@ -75,11 +79,11 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
     }
   }, [headers, loadSummary, loadPlants]);
 
-  const handleLogout = () => {
+  const handleLogout = useCallback(() => {
     logout();
     router.push("/login");
     router.refresh();
-  };
+  }, [logout, router]);
 
   const getCurrentView = () => {
     if (pathname === "/dashboard") return "dashboard";
