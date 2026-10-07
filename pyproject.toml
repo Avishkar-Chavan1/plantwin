@@ -40,7 +40,7 @@ dependencies = [
 [project.optional-dependencies]
 # pytest >=9.0.3 clears PYSEC-2026-1845 (advisory gate runs pip-audit in CI);
 # pytest-asyncio 1.x is the line compatible with the pytest 9 series.
-dev = ["pytest>=9.0.3,<10", "pytest-asyncio>=1.4,<2", "ruff>=0.6,<1", "mypy>=1.11,<2"]
+dev = ["pytest>=9.0.3,<10", "pytest-asyncio>=1.4,<2", "ruff>=0.6,<1", "mypy>=1.11,<3"]
 mqtt = ["paho-mqtt>=2.1,<3"]
 opcua = ["asyncua>=1.1,<2"]
 parquet = ["pyarrow>=17,<25"]
