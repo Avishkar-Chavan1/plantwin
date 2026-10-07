@@ -3,15 +3,26 @@ from __future__ import annotations
 import argparse
 import time
 from datetime import UTC, datetime
+from uuid import UUID
 
 from packages.units import si_unit, to_si
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from apps.api.processtwin_api.config import get_settings
 from apps.api.processtwin_api.database import Base, SessionLocal, engine
-from apps.api.processtwin_api.models import Organization, QualityStatusName, Sensor, SensorReading
+from apps.api.processtwin_api.models import (
+    DataSource,
+    Organization,
+    QualityStatusName,
+    Sensor,
+    SensorReading,
+)
+from apps.api.processtwin_api.realtime import LiveIngestionGateway
 
 from .plant import SyntheticCSTRPlant
+
+SIMULATOR_SOURCE_NAME = "Synthetic CSTR simulator"
 
 
 def append_live_sample() -> int:
@@ -34,8 +45,13 @@ def append_live_sample() -> int:
             )
         }
         plant = SyntheticCSTRPlant(seed=int(datetime.now(UTC).timestamp()))
+        now = datetime.now(UTC)
         count = 0
-        for point in plant.history(hours=1 / 12, interval_s=300, start=datetime.now(UTC)):
+        for point in plant.history(hours=1 / 12, interval_s=300, start=now):
+            # The trajectory window is inclusive of the interval end; never persist
+            # future-dated samples: every stored reading must already have happened.
+            if point.timestamp > now:
+                continue
             sensor = sensors.get(point.tag)
             if sensor is not None:
                 session.add(
@@ -55,8 +71,36 @@ def append_live_sample() -> int:
                     )
                 )
                 count += 1
+        source = session.scalar(
+            select(DataSource).where(
+                DataSource.organization_id == organization.id,
+                DataSource.name == SIMULATOR_SOURCE_NAME,
+            )
+        )
+        if source is not None and count:
+            # The simulator is genuinely the source of these readings; report real health.
+            source.status = "CONNECTED"
+            source.last_success_at = now
+            source.last_message_at = now
+            source.last_error = None
+            source.freshness_s = 0.0
         session.commit()
+        if count:
+            _synchronize_equipment(session, organization.id, now)
         return count
+
+
+def _synchronize_equipment(session: Session, organization_id: UUID, now: datetime) -> None:
+    """Persist a twin state per equipment from the latest stored readings."""
+    from apps.api.processtwin_api.models import Equipment
+
+    gateway = LiveIngestionGateway()
+    equipment_ids = session.scalars(
+        select(Equipment.id).where(Equipment.organization_id == organization_id)
+    ).all()
+    for equipment_id in equipment_ids:
+        gateway.synchronize(session, equipment_id, organization_id, now=now)
+    session.commit()
 
 
 if __name__ == "__main__":

@@ -21,14 +21,13 @@ interface ProcessTwinConsoleProps {
   headers: Record<string, string>;
   summary: Summary | null;
   setMessage: (message: string) => void;
-  isLoading: boolean;
 }
 
 function formatValue(value: number | null | undefined, digits = 1) {
   return value === null || value === undefined || Number.isNaN(value) ? "—" : value.toFixed(digits);
 }
 
-export function ProcessTwinConsole({ token, organization, headers, summary, setMessage, isLoading }: ProcessTwinConsoleProps) {
+export function ProcessTwinConsole({ token, organization, headers, summary, setMessage }: ProcessTwinConsoleProps) {
   const [sensors, setSensors] = useState<Sensor[]>([]);
   const [readings, setReadings] = useState<Record<string, Reading[]>>({});
   const [selectedSensorId, setSelectedSensorId] = useState("");
@@ -73,7 +72,6 @@ export function ProcessTwinConsole({ token, organization, headers, summary, setM
   const measurements = summary?.measurements ?? {};
   const twin = summary?.twin;
 
-  if (isLoading) return <div className="console-loading" role="status">Loading workspace data…</div>;
   if (!summary?.equipment) return <EmptyState title="No equipment configured" body="Add an equipment asset to this organization before opening a process twin." />;
 
   return <>

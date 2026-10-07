@@ -79,9 +79,11 @@ services:
     depends_on:
       demo-init: {condition: service_completed_successfully}
   web:
-    build: ./apps/web
-    environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
+    build:
+      context: ./apps/web
+      args:
+        # Next.js inlines the public API origin into browser JS during the image build.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
     ports: ["3000:3000"]
     depends_on:
       api: {condition: service_healthy}

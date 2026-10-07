@@ -276,6 +276,50 @@ class DataSource(Timestamped, Base):
     last_error: Mapped[str | None] = mapped_column(Text)
 
 
+class ConnectorTag(Timestamped, Base):
+    __tablename__ = "connector_tags"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "plant_tag", name="uq_connector_tag_plant_tag"),
+        Index("ix_connector_tags_organization_id", "organization_id"),
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    plant_id: Mapped[UUID | None] = mapped_column(ForeignKey("plants.id", ondelete="SET NULL"))
+    tag: Mapped[str] = mapped_column(String(128), nullable=False)
+    canonical_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    engineering_unit: Mapped[str] = mapped_column(String(32), nullable=False)
+    normalized_unit: Mapped[str] = mapped_column(String(32), nullable=False)
+    minimum_si: Mapped[float | None] = mapped_column(Float)
+    maximum_si: Mapped[float | None] = mapped_column(Float)
+    expected_sampling_interval_s: Mapped[int | None] = mapped_column(Integer)
+    max_rate_of_change_per_s: Mapped[float | None] = mapped_column(Float)
+    max_drift_per_hour: Mapped[float | None] = mapped_column(Float)
+
+
+class ConnectorTagMapping(Timestamped, Base):
+    __tablename__ = "connector_tag_mappings"
+    __table_args__ = (
+        UniqueConstraint("data_source_id", "connector_tag_id", name="uq_connector_tag_mapping"),
+        Index("ix_connector_tag_mappings_organization_id", "organization_id"),
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    data_source_id: Mapped[UUID] = mapped_column(
+        ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False
+    )
+    connector_tag_id: Mapped[UUID] = mapped_column(
+        ForeignKey("connector_tags.id", ondelete="CASCADE"), nullable=False
+    )
+    sensor_id: Mapped[UUID] = mapped_column(
+        ForeignKey("sensors.id", ondelete="CASCADE"), nullable=False
+    )
+    source_key: Mapped[str] = mapped_column(String(512), nullable=False)
+
+
 class SourceTagMapping(Timestamped, Base):
     __tablename__ = "source_tag_mappings"
     __table_args__ = (
@@ -298,6 +342,23 @@ class SourceTagMapping(Timestamped, Base):
     source_key: Mapped[str] = mapped_column(String(512), nullable=False)
     canonical_name: Mapped[str] = mapped_column(String(128), nullable=False)
     source_unit: Mapped[str] = mapped_column(String(32), nullable=False)
+
+
+class ConnectorValidationRule(Timestamped, Base):
+    __tablename__ = "connector_validation_rules"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "connector_tag_id", "rule_type", name="uq_connector_validation_rule"),
+        Index("ix_connector_validation_rules_organization_id", "organization_id"),
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    connector_tag_id: Mapped[UUID] = mapped_column(
+        ForeignKey("connector_tags.id", ondelete="CASCADE"), nullable=False
+    )
+    rule_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    parameters: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
 
 class Dataset(Timestamped, Base):

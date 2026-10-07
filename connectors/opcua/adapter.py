@@ -14,7 +14,12 @@ logger = logging.getLogger(__name__)
 
 
 class OpcUaDataSource(Protocol):
-    """Read-only acquisition boundary for customer-configured OPC UA endpoints."""
+    """Read-only acquisition boundary for customer-configured OPC UA endpoints.
+
+    This protocol is deliberately write-free: no ``write``, ``write_value``,
+    ``set``, ``call``, ``publish`` or ``invoke`` operations exist on this boundary.
+    Any future protocol implementation must preserve that constraint.
+    """
 
     async def read_value(self, node_id: str) -> tuple[datetime, float, str]: ...
 

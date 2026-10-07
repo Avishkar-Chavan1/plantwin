@@ -48,15 +48,18 @@ from .contracts import (
 )
 from .database import Base, database_is_ready, engine, set_request_principal, set_tenant_context
 from .datasets import router as datasets_router
+from .connector_api import router as connector_router
 from .live_api import router as live_router
 from .modeling import router as modeling_router
 from .models import (
     Alert,
+    ConnectorTag,
+    ConnectorTagMapping,
+    DataSource,
     Equipment,
     ModelVersion,
     OptimizationRun,
     OrganizationMembership,
-    PhysicsParameterSet,
     Plant,
     QualityEvent,
     QualityStatusName,
@@ -119,6 +122,7 @@ def create_app() -> FastAPI:
     app.include_router(live_router)
     app.include_router(modeling_router)
     app.include_router(workflow_router)
+    app.include_router(connector_router)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.cors_origins_parsed),
@@ -297,7 +301,7 @@ def readiness() -> Response:
     redis_url = os.getenv("REDIS_URL")
     if redis_url:
         try:
-            import redis  # type: ignore[import-untyped]
+            import redis
             client = redis.Redis.from_url(redis_url, socket_connect_timeout=2, socket_timeout=2)
             client.ping()
             checks["redis"] = "ok"
@@ -1411,6 +1415,11 @@ def dashboard_payload(context: TenantContext, session: Session) -> dict[str, Any
                 ),
             )
             .order_by(desc(SensorReading.timestamp))
+            # Without an explicit LIMIT the engine returns every reading for the
+            # sensor and the ORM discards all but the first, which made this
+            # endpoint scale linearly with the historian instead of stopping at
+            # the newest row the (sensor_id, timestamp) index already leads to.
+            .limit(1)
         )
         if reading:
             from .realtime import source_mode
@@ -1513,7 +1522,7 @@ def dashboard_payload(context: TenantContext, session: Session) -> dict[str, Any
             "measurements": latest,
             "twin": twin_body,
             "active_alerts": 0,
-            "safety_notice": "LIVE READ-ONLY MODE"
+            "safety_notice": "LIVE READ-ONLY MODE; no plant-control connection is configured."
             if mode == "LIVE_READ_ONLY"
             else "HISTORICAL MODE; no control connection is available.",
         }
@@ -1538,21 +1547,30 @@ def dashboard_payload(context: TenantContext, session: Session) -> dict[str, Any
         )
         or 0
     )
+    if mode == "LIVE_READ_ONLY":
+        return {
+            "equipment": {"id": str(equipment.id), "tag": equipment.tag, "name": equipment.name},
+            "source_mode": mode,
+            "plant_health": health_status,
+            "measurements": latest,
+            "twin": twin_body,
+            "active_alerts": 0,
+            "safety_notice": "LIVE READ-ONLY MODE; no plant-control connection is configured.",
+        }
     return {
-        "equipment": {"id": str(equipment.id), "tag": equipment.tag, "name": equipment.name},
-        "source_mode": "SIMULATION",
-        "plant_health": "SIMULATION",
-        "measurements": latest,
-        "twin": {
-            "temperature": snapshot.temperature.model_dump(),
-            "conversion": snapshot.conversion.model_dump(),
-            "yield": snapshot.yield_b.model_dump(),
-            "selectivity": snapshot.selectivity_b.model_dump(),
-            "heat_removal": snapshot.heat_removal.model_dump(),
-            "divergence_temperature_k": snapshot.divergence_temperature_k,
-        },
-        "active_alerts": active_alerts,
-        "safety_notice": "Predictions and recommendations are advisory. No physical plant controls are connected.",
+        "equipment": {"id": str(equipment.id), "tag": equipment.tag, "name": equipment.name},            "source_mode": "SIMULATION",
+            "plant_health": "SIMULATION",
+            "measurements": latest,
+            "twin": {
+                "temperature": snapshot.temperature.model_dump(),
+                "conversion": snapshot.conversion.model_dump(),
+                "yield": snapshot.yield_b.model_dump(),
+                "selectivity": snapshot.selectivity_b.model_dump(),
+                "heat_removal": snapshot.heat_removal.model_dump(),
+                "divergence_temperature_k": snapshot.divergence_temperature_k,
+            },
+            "active_alerts": active_alerts,
+            "safety_notice": "SIMULATION MODE ONLY; no physical plant controls are connected.",
     }
 
 

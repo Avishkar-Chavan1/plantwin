@@ -13,7 +13,7 @@ import json
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 from urllib.request import Request, urlopen
 
 import numpy as np
@@ -139,10 +139,7 @@ class TEPSurrogate:
         if not np.isfinite(matrix).all():
             raise ValueError("Features must be finite")
         standardized = (matrix - self.feature_mean) / self.feature_scale
-        return cast(
-            NDArray[np.float64],
-            (standardized @ self.coefficients) * self.target_scale + self.target_mean,
-        )
+        return (standardized @ self.coefficients) * self.target_scale + self.target_mean
 
     def outside_envelope(self, features: NDArray[np.float64]) -> NDArray[np.bool_]:
         """Return rows outside the calibration feature min/max envelope plus tolerance.
@@ -159,7 +156,7 @@ class TEPSurrogate:
         tolerance = np.maximum(span * self.envelope_margin_fraction, self.feature_scale * 0.1)
         lower = self.training_feature_minimum - tolerance
         upper = self.training_feature_maximum + tolerance
-        return cast(NDArray[np.bool_], np.any((matrix < lower) | (matrix > upper), axis=1))
+        return np.any((matrix < lower) | (matrix > upper), axis=1)
 
 
 @dataclass(frozen=True)

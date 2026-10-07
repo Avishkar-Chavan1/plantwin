@@ -14,7 +14,8 @@ interface AuthState {
   isLoading: boolean;
   login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => Promise<void>;
-  refreshSession: () => Promise<boolean>;
+  /** Rotate the refresh token; resolves with the new access token or null when the session ended. */
+  refreshSession: () => Promise<string | null>;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -94,9 +95,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     persistAuth(auth);
   }, []);
 
-  const refreshSession = useCallback(async (): Promise<boolean> => {
+  const refreshSession = useCallback(async (): Promise<string | null> => {
     const stored = readStoredAuth();
-    if (!stored?.refreshToken) return false;
+    if (!stored?.refreshToken) return null;
     try {
       const response = await fetch(`${apiUrl}/api/v1/auth/refresh`, {
         method: "POST",
@@ -104,11 +105,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         body: JSON.stringify({ refresh_token: stored.refreshToken }),
       });
       const body = await response.json();
-      if (!response.ok || !body.access_token || !body.refresh_token) return false;
+      if (!response.ok || !body.access_token || !body.refresh_token) return null;
       applyAuth({ token: body.access_token, refreshToken: body.refresh_token, organization: stored.organization });
-      return true;
+      return body.access_token as string;
     } catch {
-      return false;
+      return null;
     }
   }, [applyAuth]);
 

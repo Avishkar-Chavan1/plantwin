@@ -1,12 +1,23 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "./auth-provider";
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export type ApiHeaders = { Authorization: string; "X-Organization-ID": string; "Content-Type": string };
 export type PlantSummary = { id: string; name: string; location: string | null };
+
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+
+  constructor(status: number, message: string, code?: string) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
 
 type WorkspaceData = {
   summary: Record<string, unknown> | null;
@@ -19,13 +30,20 @@ type WorkspaceData = {
   message: string;
   setMessage: (message: string) => void;
   refresh: () => Promise<void>;
+  /**
+   * Authenticated fetch with one automatic retry after a token refresh.
+   * JSON bodies are serialized and given the JSON content type; FormData is
+   * passed through untouched so the browser can set the multipart boundary.
+   */
+  apiFetch: (path: string, init?: RequestInit & { json?: unknown }) => Promise<Response>;
 };
 
 const WorkspaceDataContext = createContext<WorkspaceData | null>(null);
 
 async function responseMessage(response: Response, fallback: string) {
   try {
-    const body = await response.json() as { detail?: { message?: string }; error?: { message?: string } };
+    const body = (await response.json()) as { detail?: { message?: string } | string; error?: { message?: string } };
+    if (typeof body.detail === "string") return body.detail;
     return body.detail?.message ?? body.error?.message ?? fallback;
   } catch {
     return fallback;
@@ -33,12 +51,13 @@ async function responseMessage(response: Response, fallback: string) {
 }
 
 export function WorkspaceDataProvider({ children }: { children: React.ReactNode }) {
-  const { token, organization } = useAuth();
+  const { token, organization, refreshSession } = useAuth();
   const [summary, setSummary] = useState<Record<string, unknown> | null>(null);
   const [plants, setPlants] = useState<PlantSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState("");
+  const inFlight = useRef<AbortController | null>(null);
 
   const headers = useMemo<ApiHeaders | null>(() => token && organization ? {
     Authorization: `Bearer ${token}`,
@@ -46,12 +65,45 @@ export function WorkspaceDataProvider({ children }: { children: React.ReactNode 
     "Content-Type": "application/json",
   } : null, [token, organization]);
 
+  const apiFetch = useCallback(async (path: string, init: RequestInit & { json?: unknown } = {}) => {
+    if (!headers) throw new ApiError(401, "Your session has ended. Sign in again.");
+    const { json, ...rest } = init;
+    const buildInit = (authorization: string): RequestInit => {
+      const requestHeaders: Record<string, string> = {
+        Authorization: authorization,
+        "X-Organization-ID": headers["X-Organization-ID"],
+      };
+      if (json !== undefined) {
+        requestHeaders["Content-Type"] = "application/json";
+        return { ...rest, headers: requestHeaders, body: JSON.stringify(json) };
+      }
+      if (rest.body instanceof FormData || rest.body instanceof Blob || typeof rest.body === "string") {
+        // Leave multipart/binary bodies to the caller; only add auth headers.
+        return { ...rest, headers: { ...rest.headers, Authorization: authorization, "X-Organization-ID": headers["X-Organization-ID"] } };
+      }
+      requestHeaders["Content-Type"] = "application/json";
+      return { ...rest, headers: { ...rest.headers, ...requestHeaders } };
+    };
+
+    let response = await fetch(`${apiUrl}${path}`, buildInit(headers.Authorization));
+    if (response.status === 401) {
+      // Access tokens expire; rotate once and retry before surfacing an error.
+      const renewed = await refreshSession();
+      if (renewed) {
+        response = await fetch(`${apiUrl}${path}`, buildInit(renewed));
+      }
+    }
+    return response;
+  }, [headers, refreshSession]);
+
   const refresh = useCallback(async () => {
     if (!headers) {
       setIsLoading(false);
       return;
     }
+    inFlight.current?.abort();
     const controller = new AbortController();
+    inFlight.current = controller;
     setIsLoading(true);
     setError(null);
     try {
@@ -65,6 +117,7 @@ export function WorkspaceDataProvider({ children }: { children: React.ReactNode 
         summaryResponse.json() as Promise<Record<string, unknown>>,
         plantsResponse.json() as Promise<{ items?: PlantSummary[] }>,
       ]);
+      if (controller.signal.aborted) return;
       setSummary(summaryBody);
       setPlants(plantsBody.items ?? []);
     } catch (caught) {
@@ -72,15 +125,18 @@ export function WorkspaceDataProvider({ children }: { children: React.ReactNode 
         setError(caught instanceof Error ? caught.message : "Unable to load workspace data.");
       }
     } finally {
-      setIsLoading(false);
+      if (!controller.signal.aborted) setIsLoading(false);
     }
   }, [headers]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    void refresh();
+    return () => inFlight.current?.abort();
+  }, [refresh]);
 
   const value = useMemo(() => ({
-    summary, plants, headers, token, organization, isLoading, error, message, setMessage, refresh,
-  }), [summary, plants, headers, token, organization, isLoading, error, message, refresh]);
+    summary, plants, headers, token, organization, isLoading, error, message, setMessage, refresh, apiFetch,
+  }), [summary, plants, headers, token, organization, isLoading, error, message, refresh, apiFetch]);
 
   return <WorkspaceDataContext.Provider value={value}>{children}</WorkspaceDataContext.Provider>;
 }

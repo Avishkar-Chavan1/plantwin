@@ -64,7 +64,7 @@ function ShellBody({ children }: { children: React.ReactNode }) {
             <span>{sourceMode === "LIVE_READ_ONLY" ? "LIVE · READ ONLY" : sourceMode === "HISTORICAL" ? "HISTORICAL" : sourceMode === "MIXED_DATA_BLOCKED" ? "MIXED DATA BLOCKED" : sourceMode === "SIMULATION" ? "SIMULATION" : "NO DATA"}</span>
           </div>
         </header>
-        {summary?.safety_notice && <p className="notice">{String(summary.safety_notice)}</p>}
+        {summary?.safety_notice ? <p className="notice">{String(summary.safety_notice)}</p> : null}
         {error && <div className="error-state" role="alert"><strong>Workspace data unavailable.</strong> {error}<button className="secondary" onClick={() => window.location.reload()}>Retry</button></div>}
         {message && <p className="message" role="status">{message}<button className="message-dismiss" aria-label="Dismiss message" onClick={() => setMessage("")}>×</button></p>}
         <div className="content-area">{children}</div>
