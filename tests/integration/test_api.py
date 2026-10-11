@@ -122,6 +122,56 @@ def test_login_cors_preflight_allows_only_the_configured_origin() -> None:
     assert "access-control-allow-origin" not in rejected.headers
 
 
+def test_production_disables_docs_but_keeps_login_route_and_configured_cors(
+    monkeypatch,
+) -> None:
+    from apps.api.processtwin_api import main
+    from apps.api.processtwin_api.config import Settings
+
+    production_settings = Settings(
+        environment="production",
+        database_url="postgresql+psycopg://processtwin:synthetic-password@localhost/processtwin",
+        jwt_secret="synthetic-production-secret-not-for-deployment-0123456789",
+        metrics_token="synthetic-production-metrics-not-for-deployment-0123456789",
+        cors_origins="https://web.example.test",
+        demo_email=None,
+        demo_password=None,
+    )
+    monkeypatch.setattr(main, "get_settings", lambda: production_settings)
+    production_app = main.create_app()
+
+    assert production_app.docs_url is None
+    assert production_app.redoc_url is None
+    assert any(
+        getattr(route, "path", None) == "/api/v1/auth/login"
+        and "POST" in getattr(route, "methods", set())
+        for route in main.app.routes
+    )
+
+    client = TestClient(production_app)
+    allowed = client.options(
+        "/api/v1/auth/login",
+        headers={
+            "Origin": "https://web.example.test",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert allowed.status_code == 200
+    assert allowed.headers["access-control-allow-origin"] == "https://web.example.test"
+
+    rejected = client.options(
+        "/api/v1/auth/login",
+        headers={
+            "Origin": "https://unconfigured.example.test",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert rejected.status_code == 400
+    assert "access-control-allow-origin" not in rejected.headers
+
+
 def test_login_normalizes_email_and_returns_auth_tokens() -> None:
     client, _, _ = setup_tenant()
     response = client.post(
