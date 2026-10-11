@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -15,6 +16,7 @@ from apps.api.processtwin_api.models import (
     Sensor,
     User,
 )
+from apps.api.processtwin_api.observability import JsonFormatter
 from fastapi.testclient import TestClient
 
 
@@ -243,6 +245,16 @@ def test_login_unexpected_error_is_logged_safely_and_keeps_cors(
         frame["function"] == "fail_password_check"
         for frame in logged_fields["exception_frames"]
     )
+    rendered_log = JsonFormatter().format(error_record)
+    rendered_fields = json.loads(rendered_log)
+    assert rendered_fields["request_id"] == request_id
+    assert rendered_fields["exception_type"] == "RuntimeError"
+    assert any(
+        frame["function"] == "fail_password_check"
+        for frame in rendered_fields["exception_frames"]
+    )
+    assert exception_text not in rendered_log
+    assert "SyntheticNotASecret" not in rendered_log
 
 
 def test_invalid_sensor_value_is_rejected_but_quality_event_is_audited() -> None:
