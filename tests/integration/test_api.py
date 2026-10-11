@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
+from io import StringIO
 
 import pytest
+from apps.api.processtwin_api import observability
 from apps.api.processtwin_api.auth import hash_password
 from apps.api.processtwin_api.database import Base, SessionLocal, engine
 from apps.api.processtwin_api.models import (
@@ -213,10 +216,14 @@ def test_login_unexpected_error_is_logged_safely_and_keeps_cors(
     from apps.api.processtwin_api import main
 
     client, _, _ = setup_tenant()
-    exception_text = "synthetic error detail that must not enter logs"
+    exception_text = "synthetic SQL parameter value must not enter logs"
+    cause_text = "password=synthetic-password token=synthetic-token Cookie=synthetic-cookie"
 
     def fail_password_check(_password: str, _password_hash: str) -> bool:
-        raise RuntimeError(exception_text)
+        try:
+            raise ValueError(cause_text)
+        except ValueError as cause:
+            raise RuntimeError(exception_text) from cause
 
     monkeypatch.setattr(main, "verify_password", fail_password_check)
     caplog.set_level("ERROR", logger="processtwin.api")
@@ -242,20 +249,49 @@ def test_login_unexpected_error_is_logged_safely_and_keeps_cors(
     )
     logged_fields = vars(error_record)
     assert logged_fields["exception_type"] == "RuntimeError"
-    assert logged_fields["exception_chain"][0] == "RuntimeError"
+    assert logged_fields["exception_chain"] == ["RuntimeError", "ValueError"]
     assert any(
         frame["function"] == "fail_password_check"
         for frame in logged_fields["exception_frames"]
     )
-    rendered_log = JsonFormatter().format(error_record)
+    log_stream = StringIO()
+    render_handler = logging.StreamHandler(log_stream)
+    isolated_root_logger = logging.Logger("test-render-root")
+    isolated_root_logger.addHandler(render_handler)
+    monkeypatch.setattr(
+        logging,
+        "getLogger",
+        lambda *_args: isolated_root_logger,
+    )
+    observability.configure_logging("INFO")
+    assert isinstance(render_handler.formatter, JsonFormatter)
+    render_handler.handle(error_record)
+    rendered_log = log_stream.getvalue().strip()
     rendered_fields = json.loads(rendered_log)
     assert rendered_fields["request_id"] == request_id
     assert rendered_fields["exception_type"] == "RuntimeError"
+    assert rendered_fields["exception_chain"] == ["RuntimeError", "ValueError"]
     assert any(
-        frame["function"] == "fail_password_check"
+        frame["exception_type"] == "RuntimeError"
+        and frame["function"] == "fail_password_check"
+        for frame in rendered_fields["exception_frames"]
+    )
+    assert any(
+        frame["exception_type"] == "ValueError"
+        and frame["function"] == "fail_password_check"
+        for frame in rendered_fields["exception_frames"]
+    )
+    assert all(
+        isinstance(frame["file"], str)
+        and isinstance(frame["line"], int)
+        and isinstance(frame["function"], str)
         for frame in rendered_fields["exception_frames"]
     )
     assert exception_text not in rendered_log
+    assert cause_text not in rendered_log
+    assert "synthetic-password" not in rendered_log
+    assert "synthetic-token" not in rendered_log
+    assert "synthetic-cookie" not in rendered_log
     assert "SyntheticNotASecret" not in rendered_log
 
 
