@@ -17,7 +17,7 @@ dependencies = [
   "alembic>=1.13,<2",
   "passlib[bcrypt]>=1.7,<2",
   # passlib 1.7.4 is compatible with bcrypt 3.x; bcrypt 4.x has API changes.
-  "bcrypt>=3.2,<4",
+  "bcrypt>=3.2,<6",
   "PyJWT>=2.9,<3",
   "email-validator>=2.2,<3",
   # Verified runtime: numpy 2.5.x / scipy 1.18.x. The former <2 / <1.14 caps contradicted
