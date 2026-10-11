@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ApiError, describeFailure, readErrorMessage, safeRedirectTarget } from "../components/api-client.ts";
+import {
+  ApiError,
+  AUTH_REQUEST_TIMEOUT_MS,
+  describeFailure,
+  LOGIN_REQUEST_TIMEOUT_MS,
+  readErrorMessage,
+  safeRedirectTarget,
+  timeoutSignal,
+} from "../components/api-client.ts";
 import { formatAge, formatNumber, modeInfo, normalizeMode } from "../components/format.ts";
 
 test("safeRedirectTarget only accepts same-origin relative application paths", () => {
@@ -63,6 +71,17 @@ test("readErrorMessage gives actionable text for bodies without a message", asyn
 test("network and timeout failures are described distinctly", () => {
   assert.match(describeFailure(new DOMException("t", "TimeoutError"), 30_000), /timed out after 30 s/);
   assert.match(describeFailure(new TypeError("Failed to fetch"), 30_000), /Cannot reach the ProcessTwin API/);
+  assert.match(describeFailure(new Error("storage unavailable"), 30_000), /could not be completed/);
+});
+
+test("login has a bounded timeout longer than background auth requests", async () => {
+  assert.equal(LOGIN_REQUEST_TIMEOUT_MS, 30_000);
+  assert.equal(AUTH_REQUEST_TIMEOUT_MS, 15_000);
+
+  const signal = timeoutSignal(10);
+  await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+  assert.equal(signal.aborted, true);
+  assert.equal(signal.reason.name, "TimeoutError");
 });
 
 test("ApiError carries status, code and request id", () => {

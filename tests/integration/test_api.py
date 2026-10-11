@@ -93,6 +93,49 @@ def test_cross_tenant_header_is_forbidden() -> None:
     assert response.json()["error"]["code"] == "HTTP_ERROR"
 
 
+def test_login_cors_preflight_allows_only_the_configured_origin() -> None:
+    from apps.api.processtwin_api.main import app
+
+    client = TestClient(app)
+    allowed = client.options(
+        "/api/v1/auth/login",
+        headers={
+            "Origin": "http://localhost:3000",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert allowed.status_code == 200
+    assert allowed.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert "POST" in allowed.headers["access-control-allow-methods"]
+    assert "content-type" in allowed.headers["access-control-allow-headers"].lower()
+
+    rejected = client.options(
+        "/api/v1/auth/login",
+        headers={
+            "Origin": "https://unconfigured.example.test",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert rejected.status_code == 400
+    assert "access-control-allow-origin" not in rejected.headers
+
+
+def test_login_normalizes_email_and_returns_auth_tokens() -> None:
+    client, _, _ = setup_tenant()
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": " TESTER@EXAMPLE.TEST ", "password": "CorrectHorseBattery1"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["token_type"] == "bearer"
+    assert body["access_token"]
+    assert body["refresh_token"]
+    assert body["organizations"]
+
+
 def test_invalid_sensor_value_is_rejected_but_quality_event_is_audited() -> None:
     client, headers, sensor = setup_tenant()
     response = client.post(

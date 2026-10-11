@@ -1,7 +1,13 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { API_URL } from "./api-client";
+import {
+  API_URL,
+  AUTH_REQUEST_TIMEOUT_MS,
+  describeFailure,
+  LOGIN_REQUEST_TIMEOUT_MS,
+  timeoutSignal,
+} from "./api-client";
 
 const STORAGE_KEY = "processtwin-auth";
 /**
@@ -12,7 +18,6 @@ const STORAGE_KEY = "processtwin-auth";
 const SESSION_MARKER = "processtwin-session";
 const LEGACY_COOKIES = ["processtwin-token", "processtwin-refresh-token", "processtwin-org"];
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
-const AUTH_REQUEST_TIMEOUT_MS = 15_000;
 
 type StoredAuth = { token: string; refreshToken: string; organization: string };
 
@@ -72,10 +77,6 @@ async function errorMessage(response: Response, fallback: string): Promise<strin
   if (response.status === 429) return "Too many sign-in attempts. Wait a minute and try again.";
   if (response.status >= 500) return "The ProcessTwin API is unavailable. Try again shortly.";
   return fallback;
-}
-
-function timeoutSignal(ms: number): AbortSignal {
-  return AbortSignal.timeout(ms);
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -182,7 +183,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
-        signal: timeoutSignal(AUTH_REQUEST_TIMEOUT_MS),
+        signal: timeoutSignal(LOGIN_REQUEST_TIMEOUT_MS),
       });
       if (!response.ok) return { success: false, error: await errorMessage(response, "Sign-in failed. Check your credentials.") };
       const body = await response.json();
@@ -194,13 +195,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setIsLoading(false);
       return { success: true };
     } catch (caught) {
-      const timedOut = caught instanceof DOMException && caught.name === "TimeoutError";
-      return {
-        success: false,
-        error: timedOut
-          ? "The sign-in request timed out. The API may be starting up; try again."
-          : "Cannot reach the ProcessTwin API. Check your connection or the deployment's API URL.",
-      };
+      return { success: false, error: describeFailure(caught, LOGIN_REQUEST_TIMEOUT_MS) };
     }
   }, [applyAuth]);
 

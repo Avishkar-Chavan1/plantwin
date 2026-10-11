@@ -24,13 +24,18 @@ function LoginForm() {
     setIsSubmitting(true);
     setMessage("");
     const form = new FormData(event.currentTarget);
-    const result = await login(String(form.get("email") ?? "").trim(), String(form.get("password") ?? ""));
-    if (!result.success) {
-      setMessage(result.error ?? "Sign-in failed. Please try again.");
+    try {
+      const result = await login(String(form.get("email") ?? "").trim(), String(form.get("password") ?? ""));
+      if (!result.success) {
+        setMessage(result.error ?? "Sign-in failed. Please try again.");
+        return;
+      }
+      router.replace(destination);
+    } catch {
+      setMessage("The sign-in request could not be completed. Please retry.");
+    } finally {
       setIsSubmitting(false);
-      return;
     }
-    router.replace(destination);
   }
 
   return (

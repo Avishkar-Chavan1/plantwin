@@ -3,6 +3,12 @@
  * public value (NEXT_PUBLIC_*). No secret may ever be placed in a NEXT_PUBLIC_* variable.
  */
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/+$/, "");
+export const AUTH_REQUEST_TIMEOUT_MS = 15_000;
+export const LOGIN_REQUEST_TIMEOUT_MS = 30_000;
+
+export function timeoutSignal(timeoutMs: number): AbortSignal {
+  return AbortSignal.timeout(timeoutMs);
+}
 
 export class ApiError extends Error {
   status: number;
@@ -63,6 +69,9 @@ export function describeFailure(caught: unknown, timeoutMs: number): string {
   }
   if (caught instanceof Error && caught.name === "TimeoutError") {
     return `The request timed out after ${Math.round(timeoutMs / 1000)} s. The server may be busy; retry.`;
+  }
+  if (!(caught instanceof TypeError)) {
+    return "The sign-in request could not be completed. Please retry.";
   }
   let host = API_URL;
   try {
