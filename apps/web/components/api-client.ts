@@ -6,6 +6,42 @@ export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:800
 export const AUTH_REQUEST_TIMEOUT_MS = 15_000;
 export const LOGIN_REQUEST_TIMEOUT_MS = 30_000;
 
+type LoginDiagnostic =
+  | { event: "submit" | "submit-ignored" }
+  | { event: "submit-error"; errorName: string }
+  | { event: "login-error"; errorName: string; durationMs: number }
+  | { event: "field-invalid"; field: "email" | "password"; reason: "required" | "format" | "invalid" }
+  | { event: "fetch-start"; apiHost: string }
+  | { event: "fetch-response"; status: number; durationMs: number }
+  | { event: "fetch-error"; errorName: string; durationMs: number };
+
+export function loginFieldValidationIssue(
+  field: string,
+  validity: Pick<ValidityState, "valid" | "valueMissing" | "typeMismatch">,
+): Extract<LoginDiagnostic, { event: "field-invalid" }> | null {
+  if (validity.valid || (field !== "email" && field !== "password")) return null;
+  return {
+    event: "field-invalid",
+    field,
+    reason: validity.valueMissing ? "required" : validity.typeMismatch ? "format" : "invalid",
+  };
+}
+
+export function logLoginDiagnostic(diagnostic: LoginDiagnostic): void {
+  if (typeof window === "undefined" || new URLSearchParams(window.location.search).get("authDiagnostics") !== "1") {
+    return;
+  }
+  console.info("[ProcessTwin auth diagnostic]", diagnostic);
+}
+
+export function apiHostForDiagnostics(): string {
+  try {
+    return new URL(API_URL).host;
+  } catch {
+    return "invalid-api-url";
+  }
+}
+
 export function timeoutSignal(timeoutMs: number): AbortSignal {
   return AbortSignal.timeout(timeoutMs);
 }

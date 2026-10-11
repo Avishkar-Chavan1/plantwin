@@ -5,6 +5,7 @@ import {
   AUTH_REQUEST_TIMEOUT_MS,
   describeFailure,
   LOGIN_REQUEST_TIMEOUT_MS,
+  loginFieldValidationIssue,
   readErrorMessage,
   safeRedirectTarget,
   timeoutSignal,
@@ -82,6 +83,29 @@ test("login has a bounded timeout longer than background auth requests", async (
   await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
   assert.equal(signal.aborted, true);
   assert.equal(signal.reason.name, "TimeoutError");
+});
+
+test("login diagnostics identify native field validation without exposing field values", () => {
+  assert.deepEqual(loginFieldValidationIssue("email", {
+    valid: false,
+    valueMissing: true,
+    typeMismatch: false,
+  }), { event: "field-invalid", field: "email", reason: "required" });
+  assert.deepEqual(loginFieldValidationIssue("email", {
+    valid: false,
+    valueMissing: false,
+    typeMismatch: true,
+  }), { event: "field-invalid", field: "email", reason: "format" });
+  assert.equal(loginFieldValidationIssue("password", {
+    valid: true,
+    valueMissing: false,
+    typeMismatch: false,
+  }), null);
+  assert.equal(loginFieldValidationIssue("unexpected", {
+    valid: false,
+    valueMissing: true,
+    typeMismatch: false,
+  }), null);
 });
 
 test("ApiError carries status, code and request id", () => {

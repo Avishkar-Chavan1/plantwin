@@ -4,8 +4,10 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import {
   API_URL,
   AUTH_REQUEST_TIMEOUT_MS,
+  apiHostForDiagnostics,
   describeFailure,
   LOGIN_REQUEST_TIMEOUT_MS,
+  logLoginDiagnostic,
   timeoutSignal,
 } from "./api-client";
 
@@ -178,12 +180,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [refreshSession, refreshToken]);
 
   const login = useCallback(async (email: string, password: string) => {
+    const startedAt = Date.now();
+    let fetchStarted = false;
+    let responseReceived = false;
     try {
+      const signal = timeoutSignal(LOGIN_REQUEST_TIMEOUT_MS);
+      logLoginDiagnostic({ event: "fetch-start", apiHost: apiHostForDiagnostics() });
+      fetchStarted = true;
       const response = await fetch(`${API_URL}/api/v1/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
-        signal: timeoutSignal(LOGIN_REQUEST_TIMEOUT_MS),
+        signal,
+      });
+      responseReceived = true;
+      logLoginDiagnostic({
+        event: "fetch-response",
+        status: response.status,
+        durationMs: Date.now() - startedAt,
       });
       if (!response.ok) return { success: false, error: await errorMessage(response, "Sign-in failed. Check your credentials.") };
       const body = await response.json();
@@ -195,6 +209,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setIsLoading(false);
       return { success: true };
     } catch (caught) {
+      logLoginDiagnostic({
+        event: fetchStarted && !responseReceived ? "fetch-error" : "login-error",
+        errorName: caught instanceof Error ? caught.name : "UnknownError",
+        durationMs: Date.now() - startedAt,
+      });
       return { success: false, error: describeFailure(caught, LOGIN_REQUEST_TIMEOUT_MS) };
     }
   }, [applyAuth]);

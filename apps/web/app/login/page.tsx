@@ -3,7 +3,7 @@
 import { FormEvent, Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/auth-provider";
-import { safeRedirectTarget } from "@/components/api-client";
+import { loginFieldValidationIssue, logLoginDiagnostic, safeRedirectTarget } from "@/components/api-client";
 
 function LoginForm() {
   const router = useRouter();
@@ -20,7 +20,11 @@ function LoginForm() {
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (isSubmitting) return;
+    if (isSubmitting) {
+      logLoginDiagnostic({ event: "submit-ignored" });
+      return;
+    }
+    logLoginDiagnostic({ event: "submit" });
     setIsSubmitting(true);
     setMessage("");
     const form = new FormData(event.currentTarget);
@@ -32,10 +36,20 @@ function LoginForm() {
       }
       router.replace(destination);
     } catch {
+      logLoginDiagnostic({ event: "submit-error", errorName: "UnexpectedLoginError" });
       setMessage("The sign-in request could not be completed. Please retry.");
     } finally {
       setIsSubmitting(false);
     }
+  }
+
+  function handleInvalid(event: FormEvent<HTMLFormElement>) {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) return;
+    const issue = loginFieldValidationIssue(target.name, target.validity);
+    if (!issue) return;
+    logLoginDiagnostic(issue);
+    setMessage("Check the highlighted fields and try again.");
   }
 
   return (
@@ -45,7 +59,7 @@ function LoginForm() {
         <h1>ProcessTwin</h1>
         <p>Read-only process intelligence. ProcessTwin observes, simulates and advises; it never sends commands to a plant.</p>
       </section>
-      <form className="login-card" onSubmit={handleLogin} aria-busy={isSubmitting}>
+      <form className="login-card" onSubmit={handleLogin} onInvalidCapture={handleInvalid} aria-busy={isSubmitting}>
         <h2>Sign in</h2>
         <label>
           Email
