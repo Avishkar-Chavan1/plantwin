@@ -3,11 +3,14 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
+import pytest
 import sqlalchemy as sa
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from sqlalchemy.orm import Session, sessionmaker
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -81,18 +84,29 @@ def test_connector_hardening_follows_reconcile_schema() -> None:
     assert revision.down_revision == "0008_reconcile_schema"
 
 
-def test_clean_database_migrates_to_head_with_connector_tables(tmp_path: Path) -> None:
-    """A brand-new database must reach head and contain the full connector/telemetry schema."""
+def test_clean_database_migrates_to_head_and_accepts_login(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Migrations must create login tables and allow login without missing-table errors."""
     database = tmp_path / "clean.db"
     url = f"sqlite:///{database.as_posix()}"
     result = _run_alembic(url, "upgrade", "head")
     assert result.returncode == 0, result.stdout + result.stderr
 
-    inspector = sa.inspect(sa.create_engine(url))
+    migrated_engine = sa.create_engine(url)
+    inspector = sa.inspect(migrated_engine)
     tables = set(inspector.get_table_names())
     from apps.api.processtwin_api.database import Base
 
     assert set(Base.metadata.tables) <= tables, sorted(set(Base.metadata.tables) - tables)
+    login_tables = {
+        "users",
+        "organizations",
+        "organization_memberships",
+        "refresh_tokens",
+        "audit_logs",
+    }
+    assert login_tables <= tables
     for table in ("connector_tags", "connector_tag_mappings", "connector_validation_rules"):
         foreign_keys = inspector.get_foreign_keys(table)
         assert any(fk["referred_table"] == "organizations" for fk in foreign_keys), table
@@ -109,6 +123,57 @@ def test_clean_database_migrates_to_head_with_connector_tables(tmp_path: Path) -
 
     current = _run_alembic(url, "current")
     assert "0009_connector_tenant_hardening" in current.stdout + current.stderr
+
+    from apps.api.processtwin_api.auth import hash_password
+    from apps.api.processtwin_api.database import get_session
+    from apps.api.processtwin_api.main import app
+    from apps.api.processtwin_api.models import (
+        Organization,
+        OrganizationMembership,
+        RoleName,
+        User,
+    )
+    from fastapi.testclient import TestClient
+
+    migrated_sessions = sessionmaker(
+        bind=migrated_engine,
+        autocommit=False,
+        autoflush=False,
+        expire_on_commit=False,
+    )
+    with migrated_sessions() as session:
+        organization = Organization(name="Migrated Login Test")
+        user = User(
+            email="migrated-login@example.test",
+            password_hash=hash_password("SyntheticMigrationPassword123!"),
+        )
+        session.add_all([organization, user])
+        session.flush()
+        session.add(
+            OrganizationMembership(
+                organization_id=organization.id,
+                user_id=user.id,
+                role=RoleName.ENGINEER,
+            )
+        )
+        session.commit()
+
+    def migrated_session() -> Iterator[Session]:
+        with migrated_sessions() as session:
+            yield session
+
+    monkeypatch.setitem(app.dependency_overrides, get_session, migrated_session)
+    response = TestClient(app).post(
+        "/api/v1/auth/login",
+        json={
+            "email": "migrated-login@example.test",
+            "password": "SyntheticMigrationPassword123!",
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["access_token"]
+    assert response.json()["refresh_token"]
+    migrated_engine.dispose()
 
 
 def test_migration_is_idempotent_on_repeat_and_after_downgrade(tmp_path: Path) -> None:
