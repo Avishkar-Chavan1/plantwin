@@ -24,7 +24,7 @@ Configure the Render web service as follows:
 | Dockerfile Path | `Dockerfile.api.prod` |
 | Build Command | Not used for Docker; Render builds the selected Dockerfile |
 | Start Command | Not used for Docker |
-| Docker Command | `/bin/sh -c 'unset DATABASE_ADMIN_URL; exec gunicorn apps.api.processtwin_api.main:app --bind 0.0.0.0:$PORT --workers 1 --worker-class uvicorn.workers.UvicornWorker --access-logfile - --error-logfile - --log-level info'` |
+| Docker Command | `python -m apps.api.processtwin_api.runtime` |
 | Health Check Path | `/ready` |
 
 In the Dashboard, set **Language** to **Docker** and enter the path above in
@@ -32,32 +32,28 @@ In the Dashboard, set **Language** to **Docker** and enter the path above in
 **Docker Command**. Leave Root Directory at the repository root so the Docker
 build context includes `pyproject.toml`, `apps/`, `packages/`, `connectors/`,
 and `migrations/`. Leave the native Build and Start Command fields unused.
-The optional Docker Command above overrides the image's default four-worker,
-fixed-port command with one worker and Render's `$PORT`.
+The Docker command invokes one launcher process. It runs the migrations with
+`DATABASE_ADMIN_URL` before starting Gunicorn, then removes that variable from
+the API process environment. The Gunicorn master starts one worker and binds to
+Render's `$PORT`. Each service instance runs the launcher, while PostgreSQL's
+existing advisory lock serializes concurrent migration attempts across instances.
 
 Set `ENVIRONMENT=production` and inject the production `DATABASE_URL`,
 `JWT_SECRET`, `METRICS_TOKEN` and HTTPS `CORS_ORIGINS` as Render environment
 variables. Do not set `DEMO_EMAIL` or `DEMO_PASSWORD` in production. Set
-`DATABASE_URL` to the non-owner application role. Configure
-`DATABASE_ADMIN_URL` as a secret for the pre-deploy migration. Render makes
-service environment variables available to the pre-deploy and Docker commands;
-the Docker command removes `DATABASE_ADMIN_URL` from its shell environment
-before executing Gunicorn. Render runs the pre-deploy command on a separate instance
-before deploying the image. Pre-deploy commands require a paid Render web
-service. Set that command to:
-
-```sh
-DATABASE_URL="$DATABASE_ADMIN_URL" python -m apps.api.processtwin_api.migration_runner
-```
-
-This is the migration command already used in CI. The migration runner uses the
-configured `DATABASE_URL`; run it as the table owner. Provision the non-owner
+`DATABASE_URL` to the non-owner application role and `DATABASE_ADMIN_URL` to
+the table-owner migration role; both must target the same PostgreSQL database
+and schema. Store both as Render environment variables, with the admin URL
+marked secret. The launcher fails before API startup if either URL is missing,
+non-PostgreSQL, or if migrations fail. It passes the admin URL as the
+migration subprocess's `DATABASE_URL`, then starts the API using the non-owner
+`DATABASE_URL` without exposing `DATABASE_ADMIN_URL` to Gunicorn. The same
+launcher is the Docker image default, so it runs on Render Free without the
+Pre-Deploy Command feature. The migration runner uses an advisory lock to
+serialize startup migrations across service instances. Provision the non-owner
 application role with `scripts/postgres_app_role.sql` as described in the
 operations runbook. PostgreSQL table owners bypass RLS, so keep the running
 API's `DATABASE_URL` on that non-owner role.
-
-Start with one Gunicorn worker on a small staging instance to limit per-worker
-memory use; increase only after measuring available memory and request load.
 
 If using Render's native Python runtime instead, the repository root is still
 required; use `python -m pip install .` and a Python 3.12-or-later runtime. The

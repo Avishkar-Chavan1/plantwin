@@ -67,11 +67,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 EXPOSE 8000
 
-# Run with gunicorn for production
-CMD ["gunicorn", "apps.api.processtwin_api.main:app", \
-     "--bind", "0.0.0.0:8000", \
-     "--workers", "4", \
-     "--worker-class", "uvicorn.workers.UvicornWorker", \
-     "--access-logfile", "-", \
-     "--error-logfile", "-", \
-     "--log-level", "info"]
+# Run migrations once before the Gunicorn master starts.
+CMD ["python", "-m", "apps.api.processtwin_api.runtime"]

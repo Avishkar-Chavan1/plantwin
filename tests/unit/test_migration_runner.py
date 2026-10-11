@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+from alembic import command as alembic_command
 from apps.api.processtwin_api import migration_runner
 
 
@@ -21,7 +22,7 @@ def test_sqlite_migration_uses_alembic_without_postgresql_lock(monkeypatch: Any)
     )
     monkeypatch.setattr(migration_runner, "_alembic_config", lambda: config)
     monkeypatch.setattr(
-        migration_runner.command,
+        alembic_command,
         "upgrade",
         lambda received_config, revision: calls.append((received_config, revision)),
     )
@@ -71,7 +72,7 @@ def test_postgresql_migration_locks_and_unlocks_even_when_alembic_fails(monkeypa
     def failing_upgrade(*_args: object) -> None:
         raise RuntimeError("migration failed")
 
-    monkeypatch.setattr(migration_runner.command, "upgrade", failing_upgrade)
+    monkeypatch.setattr(alembic_command, "upgrade", failing_upgrade)
 
     try:
         migration_runner.run_migrations()
