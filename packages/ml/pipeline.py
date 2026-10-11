@@ -12,7 +12,9 @@ import numpy as np
 
 type FloatArray = np.ndarray[Any, np.dtype[np.float64]]
 
-try:  # A fresh declared environment uses scikit-learn; constrained local environments retain a real fallback.
+# A fresh declared environment uses scikit-learn; constrained local environments
+# retain a real fallback.
+try:
     from sklearn.ensemble import (  # type: ignore[import-untyped]
         GradientBoostingRegressor,
         RandomForestRegressor,
@@ -190,14 +192,12 @@ def _new_estimator(algorithm: str) -> ResidualEstimator:
         return RidgeResidualRegressor()
     if algorithm not in {"random_forest", "gradient_boosting"}:
         raise ValueError("Supported algorithms: gradient_boosting, random_forest, ridge")
-    if SKLEARN_AVAILABLE and algorithm == "random_forest":
-        assert RandomForestRegressor is not None
+    if SKLEARN_AVAILABLE and algorithm == "random_forest" and RandomForestRegressor is not None:
         return cast(
             ResidualEstimator,
             RandomForestRegressor(n_estimators=250, min_samples_leaf=3, random_state=42, n_jobs=1),
         )
-    if SKLEARN_AVAILABLE:
-        assert GradientBoostingRegressor is not None
+    if SKLEARN_AVAILABLE and GradientBoostingRegressor is not None:
         return cast(
             ResidualEstimator,
             GradientBoostingRegressor(

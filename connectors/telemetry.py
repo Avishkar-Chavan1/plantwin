@@ -19,6 +19,8 @@ class TelemetryMessage(BaseModel):
     timestamp: datetime
     received_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     timestamp_source: Literal["SOURCE", "RECEIVED"] = "SOURCE"
+    #: Protocol-level quality reported by the source (e.g. OPC-UA StatusCode class).
+    quality: Literal["GOOD", "UNCERTAIN", "BAD"] = "GOOD"
 
 
 @dataclass(frozen=True)

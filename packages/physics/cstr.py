@@ -72,7 +72,9 @@ class CSTRParameters:
 
 @dataclass(frozen=True)
 class CSTRInputs:
-    """Liquid CSTR feed, coolant and pressure inputs in SI; pressure is recorded but not in this incompressible model's rate law."""
+    """Liquid CSTR feed, coolant and pressure inputs in SI; pressure is recorded but
+    not in this incompressible model's rate law.
+    """
 
     feed_flow_m3_s: float = 0.020
     feed_temperature_k: float = 453.15
@@ -177,7 +179,9 @@ class CSTRPhysicsModel:
         concentration_a = max(state.concentration_a_mol_m3, 0.0)
         return k_main * concentration_a, k_side * concentration_a
 
-    def derivatives(self, _time_s: float, vector: NDArray[np.float64], inputs: CSTRInputs) -> NDArray[np.float64]:
+    def derivatives(
+        self, _time_s: float, vector: NDArray[np.float64], inputs: CSTRInputs
+    ) -> NDArray[np.float64]:
         """Return [dCA/dt, dCB/dt, dCC/dt, dT/dt] from the balances."""
         state = CSTRState.from_vector(vector)
         rate_main, rate_side = self.rates(state)
@@ -291,7 +295,8 @@ class CSTRPhysicsModel:
         concentration_scale = max(inputs.feed_concentration_a_mol_m3, 1.0)
         temperature_scale = max(inputs.feed_temperature_k, 1.0)
         scales: NDArray[np.float64] = np.array(
-            [concentration_scale, concentration_scale, concentration_scale, temperature_scale], dtype=np.float64
+            [concentration_scale, concentration_scale, concentration_scale, temperature_scale],
+            dtype=np.float64,
         )
         result = least_squares(
             lambda vector: self.derivatives(0.0, vector, inputs) / scales,

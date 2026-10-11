@@ -1,33 +1,103 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useDashboardData } from "@/components/use-dashboard-data";
+import { FormEvent, useEffect, useState } from "react";
+import { Badge, formatNumber } from "@/components/status";
+import { messageOf, readErrorMessage } from "@/components/api-client";
+import { useApiResource } from "@/components/use-api-resource";
+import { useWorkspaceData } from "@/components/workspace-data";
 
-const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-type Model = { id: string; name: string; version: number; type: string; status: string; operating_envelope: Record<string, unknown> | null };
-type Result = { baseline: Record<string, number>; optimized: Record<string, number> & { variables: { temperature_c: number; pressure_bar: number; flow_m3_h: number } }; objective_improvement: number; energy_impact_kw: number; constraints: { status: string }; advisory: string; model_validity: string };
-function number(value: number | undefined) { return value === undefined ? "—" : value.toFixed(2); }
+type Model = { id: string; name: string; version: string; type: string; status: string };
+type Result = {
+  headline: string;
+  baseline: Record<string, number>;
+  optimized: Record<string, number> & { variables: { temperature_c: number; pressure_bar: number; flow_m3_h: number } };
+  objective_improvement: number;
+  energy_impact_kw: number;
+  constraints: { status: string };
+  advisory: string;
+  model_validity: string;
+  recommendation_id: string | null;
+  recommendation_gate: { status: "RECOMMENDATION_ALLOWED" | "NO_RECOMMENDATION"; basis: string; reasons: string[]; cautions: string[] };
+};
+
+const OPTIMIZATION_TIMEOUT_MS = 120_000;
 
 export default function Optimization() {
-  const { summary, headers, isLoading } = useDashboardData();
-  const equipment = (summary as { equipment?: { id: string; tag: string } } | null)?.equipment;
-  const [models, setModels] = useState<Model[]>([]);
+  const { summary, apiFetch, isLoading } = useWorkspaceData();
+  const equipment = (summary as { equipment?: { id: string; tag: string } | null } | null)?.equipment;
+  const registry = useApiResource<{ items: Array<Model & { operating_envelope: unknown }> }>("/api/v1/models");
+  const models = (registry.data?.items ?? []).filter((item) => ["VALIDATED", "STAGING", "PRODUCTION"].includes(item.status) && item.type === "physics_cstr");
   const [modelId, setModelId] = useState("");
+  useEffect(() => { setModelId((current) => current || models[0]?.id || ""); }, [models]);
   const [inputs, setInputs] = useState({ temperature_c: 180, pressure_bar: 10, flow_m3_h: 72, energy_weight: 0.02 });
   const [result, setResult] = useState<Result | null>(null);
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
-  useEffect(() => {
-    if (!headers) return;
-    void fetch(`${apiUrl}/api/v1/models`, { headers }).then(async (response) => { if (!response.ok) throw new Error("Unable to load model registry."); const items = (await response.json() as { items?: Model[] }).items ?? []; const usable = items.filter((item) => ["VALIDATED", "STAGING", "PRODUCTION"].includes(item.status) && item.type === "physics_cstr"); setModels(usable); setModelId((current) => current || usable[0]?.id || ""); }).catch((error) => setMessage(error.message));
-  }, [headers]);
-  async function runOptimization() {
-    if (!equipment || !headers || !modelId) { setMessage("A tenant-owned VALIDATED or PRODUCTION CSTR model is required before optimization."); return; }
-    setBusy(true); setMessage("Running bounded optimization within the validated operating envelope…");
-    try { const response = await fetch(`${apiUrl}/api/v1/optimization/runs`, { method: "POST", headers, body: JSON.stringify({ equipment_id: equipment.id, model_version_id: modelId, ...inputs }) }); const body = await response.json(); if (!response.ok) { setMessage(body.detail?.message ?? body.error?.message ?? "Optimization failed."); return; } setResult(body as Result); setMessage("Optimization completed as an advisory model run. No plant setting was changed."); } catch (error) { setMessage(error instanceof Error ? error.message : "Optimization failed."); } finally { setBusy(false); }
+  const [error, setError] = useState("");
+
+  async function run(event: FormEvent) {
+    event.preventDefault();
+    if (!equipment || !modelId) { setError("A VALIDATED, STAGING or PRODUCTION CSTR model is required before optimization."); return; }
+    setBusy(true);
+    setError("");
+    try {
+      const response = await apiFetch("/api/v1/optimization/runs", { method: "POST", json: { equipment_id: equipment.id, model_version_id: modelId, ...inputs }, timeoutMs: OPTIMIZATION_TIMEOUT_MS });
+      if (!response.ok) throw new Error(await readErrorMessage(response, "The optimization was rejected."));
+      setResult((await response.json()) as Result);
+    } catch (caught) {
+      setError(messageOf(caught, "Optimization failed."));
+    } finally {
+      setBusy(false);
+    }
   }
-  if (isLoading) return <div className="console-loading">Loading optimization inputs…</div>;
+  const numeric = (key: keyof typeof inputs) => (event: React.ChangeEvent<HTMLInputElement>) => setInputs({ ...inputs, [key]: Number(event.target.value) });
+
+  if (isLoading || registry.loading) return <div className="console-loading" role="status">Loading optimization inputs…</div>;
   if (!equipment) return <section className="panel empty-state"><h2>No equipment configured</h2><p>Configure equipment before requesting an optimization run.</p></section>;
-  return <div className="optimization-view"><p className="notice">Optimization is available only against a tenant-owned validated CSTR model and its operating envelope. Results are advisory and read-only.</p><p className="message" role="status">{message}</p><section className="grid"><article className="panel"><p className="eyebrow">BOUNDED OPTIMIZATION · {equipment.tag}</p><h2>Objective and baseline</h2>{models.length ? <label>Validated model<select value={modelId} onChange={(event) => setModelId(event.target.value)}>{models.map((model) => <option key={model.id} value={model.id}>{model.name} v{model.version} · {model.status}</option>)}</select></label> : <div className="empty-state">No validated CSTR model is available. Register and independently validate one in Models before optimizing.</div>}<div className="controls"><label>Temperature °C<input type="number" min={170} max={190} value={inputs.temperature_c} onChange={(event) => setInputs({ ...inputs, temperature_c: Number(event.target.value) })} /></label><label>Pressure bar<input type="number" min={8} max={12} value={inputs.pressure_bar} onChange={(event) => setInputs({ ...inputs, pressure_bar: Number(event.target.value) })} /></label><label>Flow m³/h<input type="number" min={57.6} max={86.4} value={inputs.flow_m3_h} onChange={(event) => setInputs({ ...inputs, flow_m3_h: Number(event.target.value) })} /></label><label>Energy weight<input type="number" min={0} max={1} step="0.01" value={inputs.energy_weight} onChange={(event) => setInputs({ ...inputs, energy_weight: Number(event.target.value) })} /></label></div><button onClick={() => void runOptimization()} disabled={busy || !models.length}>{busy ? "Optimizing…" : "Run bounded optimization"}</button></article><article className="panel"><p className="eyebrow">ADVISORY OUTPUT</p><h2>{result ? "Recommended operating point" : "Awaiting a run"}</h2>{result ? <><div className="metrics compact-metrics"><Metric label="Yield" value={number(result.optimized.yield_pct)} unit="%" /><Metric label="Conversion" value={number(result.optimized.conversion_pct)} unit="%" /><Metric label="Energy" value={number(result.optimized.energy_proxy_kw)} unit="kW" /></div><div className="impact"><span>Temperature<b>{number(result.optimized.variables.temperature_c)}°C</b></span><span>Pressure<b>{number(result.optimized.variables.pressure_bar)} bar</b></span><span>Flow<b>{number(result.optimized.variables.flow_m3_h)} m³/h</b></span></div><span className="pill good">CONSTRAINTS {result.constraints.status}</span><p className="muted">Objective improvement {number(result.objective_improvement)} · energy impact {number(result.energy_impact_kw)} kW</p><p>{result.advisory}</p></> : <div className="empty-state">The API will return baseline, optimized metrics, bounds, and advisory text after a valid model run.</div>}</article></section></div>;
+  const gate = result?.recommendation_gate;
+  return (
+    <div className="optimization-view">
+      <p className="notice">Bounded optimization runs only against a validated CSTR model and its operating envelope. The output is an advisory scenario for engineer review; it is never sent to the plant.</p>
+      {(error || registry.error) && <div className="error-state" role="alert"><strong>Optimization unavailable.</strong> {error || registry.error}</div>}
+      <section className="grid">
+        <form className="panel" onSubmit={(event) => void run(event)}>
+          <p className="eyebrow">BOUNDED OPTIMIZATION · {equipment.tag}</p>
+          <h2>Baseline operating point</h2>
+          {models.length ? (
+            <label>Model<select value={modelId} onChange={(event) => setModelId(event.target.value)}>{models.map((model) => <option key={model.id} value={model.id}>{model.name} v{model.version} · {model.status}</option>)}</select></label>
+          ) : <div className="empty-state">No VALIDATED, STAGING or PRODUCTION CSTR model exists. Register and independently validate one under Models first.</div>}
+          <div className="controls">
+            <label>Temperature °C<input type="number" step="any" min={170} max={190} value={inputs.temperature_c} onChange={numeric("temperature_c")} /></label>
+            <label>Pressure bar<input type="number" step="any" min={8} max={12} value={inputs.pressure_bar} onChange={numeric("pressure_bar")} /></label>
+            <label>Flow m³/h<input type="number" step="any" min={57.6} max={86.4} value={inputs.flow_m3_h} onChange={numeric("flow_m3_h")} /></label>
+            <label>Energy weight<input type="number" step="0.01" min={0} max={1} value={inputs.energy_weight} onChange={numeric("energy_weight")} /></label>
+          </div>
+          <button type="submit" disabled={busy || !models.length}>{busy ? "Optimizing…" : "Run bounded optimization"}</button>
+        </form>
+        <article className="panel" aria-live="polite">
+          <p className="eyebrow">ADVISORY OUTPUT</p>
+          {!result ? <><h2>Awaiting a run</h2><div className="empty-state">Results appear here with their data basis, constraints and any reasons a recommendation was withheld.</div></> : gate?.status === "NO_RECOMMENDATION" ? (
+            <>
+              <h2>NO RECOMMENDATION</h2>
+              <p className="warning"><strong>The system withheld advice because:</strong></p>
+              <ul className="plain-list">{gate.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+              <p className="muted">Basis: {gate.basis.replaceAll("_", " ").toLowerCase()}. Resolve the cause (for example restore a stale connector or move to an in-range operating point) and run again.</p>
+            </>
+          ) : (
+            <>
+              <h2>Advisory scenario</h2>
+              <Badge tone="warn">REQUIRES ENGINEER REVIEW</Badge> <Badge tone="idle">{result.model_validity.replaceAll("_", " ")}</Badge>
+              <div className="metrics compact-metrics">
+                <article className="metric"><p>Yield</p><h2>{formatNumber(result.optimized.yield_pct)}<small>%</small></h2></article>
+                <article className="metric"><p>Conversion</p><h2>{formatNumber(result.optimized.conversion_pct)}<small>%</small></h2></article>
+                <article className="metric"><p>Energy impact</p><h2>{formatNumber(result.energy_impact_kw)}<small>kW</small></h2></article>
+              </div>
+              <p>Scenario point for review: <strong>{formatNumber(result.optimized.variables.temperature_c, 1)} °C · {formatNumber(result.optimized.variables.pressure_bar, 1)} bar · {formatNumber(result.optimized.variables.flow_m3_h, 1)} m³/h</strong></p>
+              {gate?.cautions.map((caution) => <p className="warning" key={caution}>{caution}</p>)}
+              <p className="muted">{result.advisory} A recommendation was queued under Recommendations for engineer review.</p>
+            </>
+          )}
+        </article>
+      </section>
+    </div>
+  );
 }
-function Metric({ label, value, unit }: { label: string; value: string; unit: string }) { return <article className="metric"><p>{label}</p><h2>{value}<small>{unit}</small></h2></article>; }

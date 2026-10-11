@@ -20,13 +20,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from packages.optimization import OptimizationService
 from packages.physics import CSTRInputs, CSTRPhysicsModel, CSTRState
-from packages.twin import DigitalTwinService
 from packages.units import convert, si_unit, to_si
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
+from .advisory_gate import evaluate_recommendation_gate
 from .audit import append_audit
 from .auth import (
     SessionDependency,
@@ -39,6 +40,7 @@ from .auth import (
     verify_password,
 )
 from .config import get_settings
+from .connector_api import router as connector_router
 from .contracts import (
     LoginRequest,
     OptimizationRequest,
@@ -46,20 +48,25 @@ from .contracts import (
     RefreshRequest,
     SimulationRequest,
 )
-from .database import Base, database_is_ready, engine, set_request_principal, set_tenant_context
+from .dashboard import dashboard_payload
+from .database import (
+    Base,
+    SessionLocal,
+    database_is_ready,
+    engine,
+    set_request_principal,
+    set_tenant_context,
+)
 from .datasets import router as datasets_router
-from .connector_api import router as connector_router
 from .live_api import router as live_router
 from .modeling import router as modeling_router
 from .models import (
     Alert,
-    ConnectorTag,
-    ConnectorTagMapping,
-    DataSource,
     Equipment,
     ModelVersion,
     OptimizationRun,
     OrganizationMembership,
+    PhysicsParameterSet,
     Plant,
     QualityEvent,
     QualityStatusName,
@@ -69,7 +76,6 @@ from .models import (
     Sensor,
     SensorReading,
     Simulation,
-    TwinState,
     User,
 )
 from .observability import RequestIdFilter, configure_logging, set_request_id
@@ -147,6 +153,7 @@ async def request_context(request: Request, call_next: Any) -> Response:
     )
     # Set request ID in context variable for logging correlation
     set_request_id(request_id)
+    request.state.request_id = request_id
     if request.method != "OPTIONS" and request.url.path not in {"/health", "/ready", "/metrics", "/live"}:
         client = request.client.host if request.client else "unknown"
         limit = (
@@ -190,24 +197,28 @@ async def request_context(request: Request, call_next: Any) -> Response:
                 },
             )
     started = perf_counter()
-    with LATENCY.labels(request.url.path).time():
-        try:
-            response = await call_next(request)
-        except Exception:
-            logger.exception(
-                "unhandled request error",
-                extra={"request_id": request_id, "path": request.url.path},
-            )
-            response = JSONResponse(
-                status_code=500,
-                content={
-                    "error": {
-                        "code": "INTERNAL_ERROR",
-                        "message": "Internal server error",
-                        "request_id": request_id,
-                    }
-                },
-            )
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception(
+            "unhandled request error",
+            extra={"request_id": request_id, "path": request.url.path},
+        )
+        response = JSONResponse(
+            status_code=500,
+            content={
+                "error": {
+                    "code": "INTERNAL_ERROR",
+                    "message": "Internal server error",
+                    "request_id": request_id,
+                }
+            },
+        )
+    # Label by route template, never by raw path: UUIDs in paths would create an unbounded
+    # number of Prometheus series.
+    route = request.scope.get("route")
+    path_label = getattr(route, "path", None) or "unmatched"
+    LATENCY.labels(path_label).observe(perf_counter() - started)
     response.headers["X-Request-ID"] = request_id
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -218,7 +229,7 @@ async def request_context(request: Request, call_next: Any) -> Response:
     response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     if runtime_settings.is_production:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    REQUESTS.labels(request.method, request.url.path, str(response.status_code)).inc()
+    REQUESTS.labels(request.method, path_label, str(response.status_code)).inc()
     logger.info(
         "request_completed",
         extra={
@@ -233,6 +244,10 @@ async def request_context(request: Request, call_next: Any) -> Response:
     return response
 
 
+def _request_id_of(request: Request) -> str:
+    return str(getattr(request.state, "request_id", "") or request.headers.get("X-Request-ID", ""))
+
+
 @app.exception_handler(HTTPException)
 async def http_error(request: Request, exc: HTTPException) -> JSONResponse:
     detail = (
@@ -242,19 +257,33 @@ async def http_error(request: Request, exc: HTTPException) -> JSONResponse:
     )
     return JSONResponse(
         status_code=exc.status_code,
-        content={"error": {**detail, "request_id": request.headers.get("X-Request-ID", "")}},
+        content={"error": {**detail, "request_id": _request_id_of(request)}},
     )
 
 
 @app.exception_handler(RequestValidationError)
-async def validation_error(request: Request, _: RequestValidationError) -> JSONResponse:
+async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    # Field names and rule messages are safe and actionable; submitted values are never echoed
+    # (they may be credentials or personal data).
+    details = [
+        {
+            "field": ".".join(str(part) for part in error.get("loc", ()) if part != "body"),
+            "message": str(error.get("msg", "invalid value")),
+        }
+        for error in exc.errors()[:20]
+    ]
+    summary = "; ".join(
+        f"{item['field']}: {item['message']}" if item["field"] else item["message"]
+        for item in details[:3]
+    )
     return JSONResponse(
         status_code=422,
         content={
             "error": {
                 "code": "INVALID_REQUEST",
-                "message": "Request validation failed",
-                "request_id": request.headers.get("X-Request-ID", ""),
+                "message": f"Request validation failed - {summary}" if summary else "Request validation failed",
+                "details": details,
+                "request_id": _request_id_of(request),
             }
         },
     )
@@ -430,9 +459,12 @@ def refresh(payload: RefreshRequest, session: SessionDependency) -> dict[str, st
         )
     replacement_id = uuid4()
     expires_at = datetime.now(UTC) + timedelta(days=get_settings().refresh_token_expire_days)
+    session.add(RefreshToken(id=replacement_id, user_id=user.id, expires_at=expires_at))
+    # The replacement row must exist before the old row points at it (self-referencing FK);
+    # PostgreSQL enforces this at statement time, SQLite does not.
+    session.flush()
     stored_token.revoked_at = datetime.now(UTC)
     stored_token.replaced_by_id = replacement_id
-    session.add(RefreshToken(id=replacement_id, user_id=user.id, expires_at=expires_at))
     set_tenant_context(session, str(membership.organization_id))
     append_audit(
         session,
@@ -1030,6 +1062,17 @@ def optimize(
         result = optimizer.optimize(baseline_inputs, payload.energy_weight)
     except (ValueError, RuntimeError) as exc:
         raise ApiError(422, "OPTIMIZATION_REJECTED", str(exc)) from exc
+    gate = evaluate_recommendation_gate(
+        session,
+        context.organization_id,
+        payload.equipment_id,
+        inside_validated_envelope=envelope.contains(baseline_inputs),
+    )
+    if result.constraint_status != "PASS":
+        gate.allowed = False
+        gate.reasons.append(
+            f"CONSTRAINTS_NOT_SATISFIED: optimizer constraint status is {result.constraint_status}"
+        )
     baseline_state = physics.steady_state(baseline_inputs)
     optimized_state = physics.steady_state(result.inputs)
     baseline_metrics = serialized_metrics(baseline_state, baseline_inputs, physics)
@@ -1073,6 +1116,10 @@ def optimize(
             "reason": "No uncertainty estimator is registered for this operating point",
         },
         "advisory": result.advisory,
+        "recommendation_gate": gate.as_dict(),
+        "headline": "Advisory recommendation - requires engineer review"
+        if gate.allowed
+        else "NO RECOMMENDATION - " + "; ".join(gate.reasons),
     }
     run = OptimizationRun(
         organization_id=context.organization_id,
@@ -1092,7 +1139,7 @@ def optimize(
     session.add(run)
     recommendation = None
     simulation = None
-    if result.constraint_status == "PASS":
+    if gate.allowed:
         simulation_response = {
             "mode": "SIMULATION",
             "baseline": baseline_metrics,
@@ -1141,7 +1188,8 @@ def optimize(
             simulation_id=simulation.id,
             optimization_run_id=run.id,
             model_version_id=model_version.id,
-            baseline=baseline_metrics,
+            # Provenance travels with the advice so a reviewer can see what it rests on.
+            baseline={**baseline_metrics, "basis": gate.basis, "cautions": gate.cautions},
             proposed_change=recommended,
             energy_impact={
                 "change_kw": response["energy_impact_kw"],
@@ -1160,6 +1208,10 @@ def optimize(
         f"equipment:{payload.equipment_id}",
         user_id=context.user.id,
         ip_address=request.client.host if request.client else None,
+        metadata={
+            "recommendation_issued": recommendation is not None,
+            "withheld_reasons": [] if gate.allowed else gate.reasons,
+        },
     )
     session.commit()
     return {
@@ -1167,35 +1219,6 @@ def optimize(
         "simulation_id": str(simulation.id) if simulation else None,
         "recommendation_id": str(recommendation.id) if recommendation else None,
         **response,
-    }
-
-
-@app.get("/api/v1/recommendations", tags=["recommendations"])
-def recommendations(
-    context: TenantDependency, session: SessionDependency, limit: int = 50
-) -> dict[str, Any]:
-    entries = list(
-        session.scalars(
-            select(Recommendation)
-            .where(Recommendation.organization_id == context.organization_id)
-            .order_by(desc(Recommendation.created_at))
-            .limit(min(max(limit, 1), 200))
-        )
-    )
-    return {
-        "items": [
-            {
-                "id": str(entry.id),
-                "equipment_id": str(entry.equipment_id),
-                "text": entry.text,
-                "expected_impact": entry.expected_impact,
-                "confidence": entry.confidence,
-                "status": entry.status,
-                "created_at": entry.created_at,
-                "advisory": "AI-generated engineering recommendation. Verify against plant operating procedures before implementation.",
-            }
-            for entry in entries
-        ]
     }
 
 
@@ -1386,197 +1409,20 @@ def audit_log(
     }
 
 
-def dashboard_payload(context: TenantContext, session: Session) -> dict[str, Any]:
-    equipment = session.scalar(
-        select(Equipment)
-        .where(Equipment.organization_id == context.organization_id)
-        .order_by(Equipment.created_at)
-    )
-    if equipment is None:
-        return {"plant_health": "NO_DATA", "message": "No equipment configured"}
-    sensors = list(
-        session.scalars(
-            select(Sensor).where(
-                Sensor.equipment_id == equipment.id,
-                Sensor.organization_id == context.organization_id,
-            )
-        )
-    )
-    latest: dict[str, dict[str, Any]] = {}
-    modes: set[str] = set()
-    for sensor in sensors:
-        reading = session.scalar(
-            select(SensorReading)
-            .where(
-                SensorReading.sensor_id == sensor.id,
-                SensorReading.organization_id == context.organization_id,
-                SensorReading.quality_status.in_(
-                    (QualityStatusName.GOOD, QualityStatusName.SUSPECT)
-                ),
-            )
-            .order_by(desc(SensorReading.timestamp))
-            # Without an explicit LIMIT the engine returns every reading for the
-            # sensor and the ORM discards all but the first, which made this
-            # endpoint scale linearly with the historian instead of stopping at
-            # the newest row the (sensor_id, timestamp) index already leads to.
-            .limit(1)
-        )
-        if reading:
-            from .realtime import source_mode
-
-            modes.add(source_mode(reading.source))
-            latest[sensor.tag] = {
-                "value": reading.value,
-                "unit": reading.unit,
-                "quality_status": reading.quality_status.value,
-                "source": reading.source,
-                "timestamp": reading.timestamp,
-            }
-    if len(modes) > 1:
-        return {
-            "equipment": {"id": str(equipment.id), "tag": equipment.tag, "name": equipment.name},
-            "source_mode": "MIXED_DATA_BLOCKED",
-            "plant_health": "MIXED_DATA_BLOCKED",
-            "measurements": {},
-            "twin": None,
-            "active_alerts": 0,
-            "safety_notice": "SIMULATION, HISTORICAL and LIVE READ-ONLY values are never combined. Select a consistent source mode.",
-        }
-    mode = next(iter(modes)) if modes else "NO_DATA"
-    if mode in {"LIVE_READ_ONLY", "HISTORICAL"}:
-        stored = session.scalar(
-            select(TwinState)
-            .where(
-                TwinState.organization_id == context.organization_id,
-                TwinState.equipment_id == equipment.id,
-                TwinState.source_mode == mode,
-            )
-            .order_by(desc(TwinState.timestamp))
-            .limit(1)
-        )
-        if stored is None:
-            twin_body = None
-            health_status = "WAITING_FOR_SYNCHRONIZED_TWIN"
-        else:
-            physics_state = stored.state.get("physics", {})
-            measured = stored.state.get("measurements", {})
-            measured_temperature = measured.get("reactor.temperature", {})
-            selected_temperature = measured_temperature.get("normalized_value")
-            if selected_temperature is None:
-                selected_temperature = physics_state.get("temperature_k")
-            twin_body = {
-                "temperature": {
-                    "value": convert(float(selected_temperature), "K", "degC")
-                    if selected_temperature is not None
-                    else None,
-                    "unit": "degC",
-                    "source": "MEASURED" if measured_temperature else "ESTIMATED",
-                    "timestamp": stored.timestamp,
-                    "quality_status": measured_temperature.get("quality_status", "GOOD"),
-                },
-                "conversion": {
-                    "value": physics_state.get("conversion", 0.0) * 100,
-                    "unit": "%",
-                    "source": "ESTIMATED",
-                    "timestamp": stored.timestamp,
-                    "quality_status": "GOOD",
-                },
-                "yield": {
-                    "value": physics_state.get("yield", 0.0) * 100,
-                    "unit": "%",
-                    "source": "ESTIMATED",
-                    "timestamp": stored.timestamp,
-                    "quality_status": "GOOD",
-                },
-                "selectivity": {
-                    "value": physics_state.get("selectivity", 0.0) * 100,
-                    "unit": "%",
-                    "source": "ESTIMATED",
-                    "timestamp": stored.timestamp,
-                    "quality_status": "GOOD",
-                },
-                "heat_removal": {
-                    "value": physics_state.get("heat_removal_w", 0.0) / 1000,
-                    "unit": "kW",
-                    "source": "ESTIMATED",
-                    "timestamp": stored.timestamp,
-                    "quality_status": "GOOD",
-                },
-                "divergence_temperature_k": stored.state.get("physics_residual_temperature_k"),
-                "prediction_status": stored.prediction_status,
-                "uncertainty": stored.uncertainty,
-                "data_quality": stored.data_quality,
-                "health_factors": stored.health_factors,
-                "model_version_id": str(stored.model_version_id)
-                if stored.model_version_id
-                else None,
-                "physics_parameter_set_id": str(stored.physics_parameter_set_id)
-                if stored.physics_parameter_set_id
-                else None,
-            }
-            health_status = stored.health_status
-        return {
-            "equipment": {"id": str(equipment.id), "tag": equipment.tag, "name": equipment.name},
-            "source_mode": mode,
-            "plant_health": health_status,
-            "measurements": latest,
-            "twin": twin_body,
-            "active_alerts": 0,
-            "safety_notice": "LIVE READ-ONLY MODE; no plant-control connection is configured."
-            if mode == "LIVE_READ_ONLY"
-            else "HISTORICAL MODE; no control connection is available.",
-        }
-    if mode == "NO_DATA":
-        return {"plant_health": "NO_DATA", "source_mode": mode, "measurements": {}, "twin": None}
-    twin = DigitalTwinService()
-    nominal_inputs = CSTRInputs()
-    state = twin.physics.steady_state(nominal_inputs)
-    measured_temperature = (
-        to_si(latest["REACTOR_TEMPERATURE"]["value"], latest["REACTOR_TEMPERATURE"]["unit"])
-        if "REACTOR_TEMPERATURE" in latest
-        else None
-    )
-    snapshot = twin.snapshot(
-        state=state, inputs=nominal_inputs, measured_temperature_k=measured_temperature
-    )
-    active_alerts = (
-        session.scalar(
-            select(func.count())
-            .select_from(Alert)
-            .where(Alert.organization_id == context.organization_id, Alert.status == "OPEN")
-        )
-        or 0
-    )
-    if mode == "LIVE_READ_ONLY":
-        return {
-            "equipment": {"id": str(equipment.id), "tag": equipment.tag, "name": equipment.name},
-            "source_mode": mode,
-            "plant_health": health_status,
-            "measurements": latest,
-            "twin": twin_body,
-            "active_alerts": 0,
-            "safety_notice": "LIVE READ-ONLY MODE; no plant-control connection is configured.",
-        }
-    return {
-        "equipment": {"id": str(equipment.id), "tag": equipment.tag, "name": equipment.name},            "source_mode": "SIMULATION",
-            "plant_health": "SIMULATION",
-            "measurements": latest,
-            "twin": {
-                "temperature": snapshot.temperature.model_dump(),
-                "conversion": snapshot.conversion.model_dump(),
-                "yield": snapshot.yield_b.model_dump(),
-                "selectivity": snapshot.selectivity_b.model_dump(),
-                "heat_removal": snapshot.heat_removal.model_dump(),
-                "divergence_temperature_k": snapshot.divergence_temperature_k,
-            },
-            "active_alerts": active_alerts,
-            "safety_notice": "SIMULATION MODE ONLY; no physical plant controls are connected.",
-    }
-
-
 @app.get("/api/v1/dashboard/summary", tags=["dashboard"])
-def dashboard(context: TenantDependency, session: SessionDependency) -> dict[str, Any]:
-    return dashboard_payload(context, session)
+def dashboard(
+    context: TenantDependency, session: SessionDependency, equipment_id: UUID | None = None
+) -> dict[str, Any]:
+    return dashboard_payload(context, session, equipment_id)
+
+
+def _dashboard_snapshot(user_id: UUID, organization_id: UUID, context: TenantContext) -> bytes:
+    """One short-lived, tenant-scoped session per event so no connection is held while idle."""
+    with SessionLocal() as session:
+        set_request_principal(session, str(user_id))
+        set_tenant_context(session, str(organization_id))
+        payload = dashboard_payload(context, session)
+    return JSONResponse(content=payload).body
 
 
 @app.get(
@@ -1584,17 +1430,14 @@ def dashboard(context: TenantDependency, session: SessionDependency) -> dict[str
     tags=["dashboard"],
     response_class=StreamingResponse,
 )
-async def dashboard_events(
-    context: TenantDependency, session: SessionDependency
-) -> StreamingResponse:
+async def dashboard_events(context: TenantDependency) -> StreamingResponse:
     async def events() -> AsyncGenerator[str, None]:
         # Read-only SSE polling endpoint; deployments can replace this with Redis/Kafka event fanout.
         for _ in range(60):
-            response = JSONResponse(content=dashboard_payload(context, session))
-            body = response.body
-            if isinstance(body, memoryview):
-                body = body.tobytes()
-            yield f"event: twin_state\ndata: {body.decode()}\n\n"
+            body = await run_in_threadpool(
+                _dashboard_snapshot, context.user.id, context.organization_id, context
+            )
+            yield f"event: twin_state\ndata: {bytes(body).decode()}\n\n"
             await asyncio.sleep(5)
 
     return StreamingResponse(

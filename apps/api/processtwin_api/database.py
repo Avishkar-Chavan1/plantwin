@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Generator
 from typing import Any, cast
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import get_settings
@@ -50,8 +50,31 @@ def get_session() -> Generator[Session, None, None]:
         session.close()
 
 
+@event.listens_for(SessionLocal, "after_begin")
+def _reapply_rls_context(session: Session, _transaction: object, connection: Any) -> None:
+    """Re-assert the RLS principal/tenant on every new transaction of a session.
+
+    ``set_config(..., true)`` is transaction-local, so after any ``commit()`` the settings
+    vanish and later statements in the same request would silently see (or write) no rows
+    under row-level security. The values are remembered on the session and re-applied.
+    """
+    if connection.dialect.name != "postgresql":
+        return
+    for key, setting in (
+        ("rls_user_id", "app.current_user_id"),
+        ("rls_organization_id", "app.current_organization_id"),
+    ):
+        value = session.info.get(key)
+        if value:
+            connection.execute(
+                text("SELECT set_config(:setting, :value, true)"),
+                {"setting": setting, "value": value},
+            )
+
+
 def set_request_principal(session: Session, user_id: str) -> None:
     """Set the PostgreSQL RLS principal for the transaction, when RLS is enabled."""
+    session.info["rls_user_id"] = user_id
     if session.get_bind().dialect.name == "postgresql":
         session.execute(
             text("SELECT set_config('app.current_user_id', :user_id, true)"), {"user_id": user_id}
@@ -60,6 +83,7 @@ def set_request_principal(session: Session, user_id: str) -> None:
 
 def set_tenant_context(session: Session, organization_id: str) -> None:
     """Set the PostgreSQL tenant guard for the transaction, after membership verification."""
+    session.info["rls_organization_id"] = organization_id
     if session.get_bind().dialect.name == "postgresql":
         session.execute(
             text("SELECT set_config('app.current_organization_id', :organization_id, true)"),

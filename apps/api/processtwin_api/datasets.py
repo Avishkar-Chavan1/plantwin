@@ -14,7 +14,7 @@ from connectors.object_storage import ObjectStorageService
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from packages.data_ingestion import HistoricalMapping, inspect_historical_rows
 from packages.data_ingestion.pipeline import summarize_quality
-from packages.units import si_unit
+from packages.units import si_unit, supported_units
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
@@ -22,6 +22,15 @@ from sqlalchemy.orm import Session
 from .audit import append_audit
 from .auth import SessionDependency, TenantContext, require_roles, tenant_context
 from .config import get_settings
+from .dataset_preview import (
+    TimezoneError,
+    analyze_columns,
+    analyze_timestamps,
+    guess_timestamp_column,
+    parse_assumed_timezone,
+    sample_rows,
+    suggest_mappings,
+)
 from .models import (
     Dataset,
     DatasetObservation,
@@ -206,6 +215,105 @@ def _serialize_version(version: DatasetVersion) -> dict[str, Any]:
     }
 
 
+def _read_upload(filename: str | None, raw: bytes, settings: Any) -> list[dict[str, object]]:
+    """Decode an uploaded historian file or raise a precise, user-actionable error."""
+    if not filename:
+        _raise(422, "INVALID_FILE_NAME", "An uploaded file name is required")
+    if not filename.lower().endswith((".csv", ".parquet", ".pq")):
+        _raise(422, "INVALID_FILE_TYPE", "Only CSV and Parquet files are supported")
+    if not raw:
+        _raise(422, "EMPTY_FILE", "The uploaded file is empty")
+    if len(raw) > settings.max_upload_bytes:
+        _raise(
+            413,
+            "FILE_TOO_LARGE",
+            f"File exceeds the {settings.max_upload_bytes // 1_000_000} MB limit. "
+            "Split the file or use the chunked import.",
+        )
+    try:
+        rows = read_historical_source(filename, raw)
+    except RuntimeError as exc:
+        _raise(422, "FORMAT_SUPPORT_UNAVAILABLE", str(exc))
+    except ValueError as exc:
+        _raise(422, "MALFORMED_FILE", str(exc))
+    if len(rows) > 100_000:
+        _raise(413, "TOO_MANY_ROWS", "Historical imports are limited to 100,000 rows per version")
+    return rows
+
+
+@router.post("/preview")
+async def preview_dataset(
+    file: Annotated[UploadFile, File(...)],
+    context: EngineerContext,
+    timestamp_column: Annotated[str | None, Form()] = None,
+    mappings: Annotated[str | None, Form()] = None,
+    assume_timezone: Annotated[str | None, Form()] = None,
+) -> dict[str, Any]:
+    """Inspect an upload without storing anything.
+
+    Returns detected columns and types, timestamp diagnostics, suggested (unconfirmed) mappings
+    and, when mappings are supplied, the exact validation result an import would produce.
+    """
+    settings = get_settings()
+    raw = await file.read(settings.max_upload_bytes + 1)
+    rows = _read_upload(file.filename, raw, settings)
+    try:
+        assumed = parse_assumed_timezone(assume_timezone)
+    except TimezoneError as exc:
+        _raise(422, "INVALID_TIMEZONE", str(exc))
+    columns = analyze_columns(rows)
+    ts_column = guess_timestamp_column(columns, timestamp_column)
+    response: dict[str, Any] = {
+        "filename": file.filename,
+        "row_count": len(rows),
+        "columns": columns,
+        "timestamp": analyze_timestamps(rows, ts_column, assumed) if ts_column else None,
+        "timestamp_column": ts_column,
+        "suggested_mappings": suggest_mappings(columns, ts_column),
+        "sample_rows": sample_rows(rows),
+        "supported_units": supported_units(),
+        "validation": None,
+    }
+    if ts_column is None:
+        response["blocking_errors"] = [
+            "No timestamp column was detected. Select the column that holds ISO-8601 timestamps."
+        ]
+    else:
+        response["blocking_errors"] = []
+    if mappings:
+        try:
+            mapping_request = ImportMappingRequest.model_validate_json(mappings)
+        except (ValidationError, ValueError) as exc:
+            _raise(422, "INVALID_TAG_MAPPING", f"Tag mapping is invalid: {exc}")
+        if len(rows) * len(mapping_request.mappings) > 500_000:
+            _raise(413, "TOO_MANY_MEASUREMENTS", "Historical imports are limited to 500,000 tag observations per version")
+        try:
+            observations = inspect_historical_rows(
+                rows,
+                [_quality_mapping(item) for item in mapping_request.mappings],
+                timestamp_column=ts_column or "timestamp",
+                assume_timezone=assumed,
+            )
+        except ValueError as exc:
+            response["blocking_errors"].append(str(exc))
+        else:
+            summary = summarize_quality(observations)
+            counts = summary["status_counts"]
+            total = max(1, int(summary["measurements"]))  # type: ignore[call-overload]
+            bad = int(counts.get("BAD", 0)) + int(counts.get("MISSING", 0))  # type: ignore[attr-defined]
+            response["validation"] = {
+                **summary,
+                "usable_fraction": round(1 - bad / total, 4),
+                "importable": True,
+                "warning": (
+                    "More than half of the values are rejected as bad or missing. "
+                    "Check the timestamp time zone, units and column mapping before importing."
+                    if bad / total > 0.5
+                    else None
+                ),
+            }
+    return response
+
 @router.post("/import", status_code=201)
 async def import_dataset(
     file: Annotated[UploadFile, File(...)],
@@ -218,8 +326,13 @@ async def import_dataset(
     timestamp_column: Annotated[str, Form()] = "timestamp",
     description: Annotated[str | None, Form(max_length=2000)] = None,
     dataset_id: Annotated[UUID | None, Form()] = None,
+    assume_timezone: Annotated[str | None, Form()] = None,
 ) -> dict[str, Any]:
     settings = get_settings()
+    try:
+        assumed_timezone = parse_assumed_timezone(assume_timezone)
+    except TimezoneError as exc:
+        _raise(422, "INVALID_TIMEZONE", str(exc))
     filename = file.filename
     if not filename:
         _raise(422, "INVALID_FILE_NAME", "An uploaded file name is required")
@@ -256,6 +369,7 @@ async def import_dataset(
             rows,
             [_quality_mapping(mapping) for mapping in mapping_request.mappings],
             timestamp_column=timestamp_column,
+            assume_timezone=assumed_timezone,
         )
     except RuntimeError as exc:
         _raise(422, "FORMAT_SUPPORT_UNAVAILABLE", str(exc))
@@ -399,6 +513,23 @@ async def import_dataset(
             for item in observations
         ]
     )
+    # Uploaded columns that were never mapped are dropped, not stored. Report them explicitly so
+    # an engineer never believes an unmapped tag was imported.
+    mapped_sources = {item.source_tag for item in mapping_request.mappings}
+    ignored_columns = sorted(
+        column
+        for column in (rows[0].keys() if rows else [])
+        if column not in mapped_sources and column != timestamp_column
+    )
+    warnings = (
+        [
+            "These uploaded columns were not mapped and were not imported: "
+            + ", ".join(ignored_columns)
+            + ". Map them and re-import if they contain required measurements."
+        ]
+        if ignored_columns
+        else []
+    )
     append_audit(
         session,
         context.organization_id,
@@ -406,13 +537,20 @@ async def import_dataset(
         f"dataset:{dataset.id}:version:{version.version}",
         user_id=context.user.id,
         ip_address=request.client.host if request.client else None,
-        metadata={"rows": len(rows), "measurements": len(observations), "filename": filename},
+        metadata={
+            "rows": len(rows),
+            "measurements": len(observations),
+            "filename": filename,
+            "unmapped_columns": ignored_columns,
+        },
     )
     session.commit()
     return {
         "dataset_id": str(dataset.id),
         "version": _serialize_version(version),
         "quality_report": version.quality_summary,
+        "unmapped_source_tags": ignored_columns,
+        "warnings": warnings,
         "variables": [
             {
                 "source_tag": tag_mapping.source_tag,

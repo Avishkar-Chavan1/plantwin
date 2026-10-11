@@ -43,7 +43,9 @@ FEATURE_NAMES = (
 
 
 def physics_yield(temperature_c: float, flow_m3_h: float, feed_concentration: float) -> float:
-    """Measured temperature first-order CSTR baseline; residual model learns plant/model discrepancy."""
+    """Measured temperature first-order CSTR baseline;
+    residual model learns plant/model discrepancy.
+    """
     model = CSTRPhysicsModel()
     k_main, k_side = model.rate_constants(to_si(temperature_c, "degC"))
     tau = model.parameters.volume_m3 / to_si(flow_m3_h, "m3/h")
@@ -176,7 +178,10 @@ def train_all(organization_id: UUID | None = None) -> int:
                 TrainingRun(
                     organization_id=organization.id,
                     model_version_id=record.id,
-                    dataset_description=f"{len(feature_rows)} GOOD time-aligned simulated observations; ordered 60/20/20 split",
+                    dataset_description=(
+                        f"{len(feature_rows)} GOOD time-aligned simulated observations; "
+                        "ordered 60/20/20 split"
+                    ),
                     metrics={
                         "validation": result.validation_metrics.as_dict(),
                         "test": result.test_metrics.as_dict(),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any, TypedDict
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -36,7 +37,7 @@ class GatewayRuntime:
         self.reporter_interval_s = reporter_interval_s
         self._stop = asyncio.Event()
         self._tasks: dict[UUID, asyncio.Task[None]] = {}
-        self._gateway = LiveIngestionGateway()
+        self._gateway = LiveIngestionGateway(min_sync_interval_s=5.0)
 
     async def run(self) -> None:
         logger.info("Starting ProcessTwin read-only ingestion gateway")
@@ -208,9 +209,15 @@ class GatewayRuntime:
         source: GatewaySource,
         mappings: dict[str, tuple[str, str]],
     ) -> None:
+        stale_after_s = float(source["configuration"].get("stale_after_s", 30.0))
+        # Credentials/trust material come only from the gateway's environment (secret store),
+        # never from the database, the endpoint URL or API payloads.
         connector = OpcUaReadOnlyConnector(
             source["endpoint"],
-            stale_after_s=float(source["configuration"].get("stale_after_s", 30.0)),
+            stale_after_s=stale_after_s,
+            username=os.getenv("OPCUA_USERNAME") or None,
+            password=os.getenv("OPCUA_PASSWORD") or None,
+            security_string=os.getenv("OPCUA_SECURITY_STRING") or None,
         )
         reporter = asyncio.create_task(self._report_health(source_id, connector.monitor))
         try:
@@ -222,11 +229,27 @@ class GatewayRuntime:
                     source["configuration"].get("opcua_sampling_interval_ms", 1000)
                 ),
             )
-            await self._stop.wait()
+            await self._supervise(connector, stale_after_s / 3)
         finally:
             await connector.disconnect()
             reporter.cancel()
             await asyncio.gather(reporter, return_exceptions=True)
+
+    async def _supervise(self, connector: OpcUaReadOnlyConnector, check_interval_s: float) -> None:
+        """Block until stop; raise so ``_run_source`` reconnects with exponential backoff.
+
+        OPC-UA data-change subscriptions only report *changes*, so silence does not mean the
+        session died. Liveness is therefore probed explicitly; staleness is still surfaced to
+        operators through the connector's freshness/STALE status.
+        """
+        interval = min(max(check_interval_s, 2.0), 15.0)
+        while not self._stop.is_set():
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+                return
+            except TimeoutError:
+                pass
+            await connector.check_alive()
 
     async def _handle_message_async(self, source_id: UUID, message: TelemetryMessage) -> None:
         await asyncio.to_thread(self._handle_message, source_id, message)

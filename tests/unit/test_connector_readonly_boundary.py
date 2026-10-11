@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import inspect
+from datetime import UTC, datetime
 from typing import Protocol
 
 import pytest
 from apps.api.processtwin_api.realtime import source_mode
 from connectors.mqtt.adapter import MqttReadOnlySubscriber
-from connectors.opcua.adapter import OpcUaReadOnlyConnector, OpcUaDataSource, OpcUaConnectorDisabled
-from connectors.telemetry import TelemetryMessage, SourceHealthMonitor
-from datetime import UTC, datetime
+from connectors.opcua.adapter import OpcUaConnectorDisabled, OpcUaDataSource, OpcUaReadOnlyConnector
+from connectors.telemetry import SourceHealthMonitor, TelemetryMessage
 
 
 def _public_callable_names(instance: object) -> set[str]:
@@ -47,14 +47,20 @@ def test_opcua_protocol_is_read_only() -> None:
 
 
 def test_disabled_opcua_connector_refuses_all_operations() -> None:
+    import asyncio
+
+    async def _noop(message: TelemetryMessage) -> None:
+        return None
+
     connector = OpcUaConnectorDisabled()
     with pytest.raises(RuntimeError, match="not configured"):
-        connector.read_value("ns=2;s=R101.Temperature")  # type: ignore[misc]
+        asyncio.run(connector.read_value("ns=2;s=R101.Temperature"))
     with pytest.raises(RuntimeError, match="not configured"):
-        connector.discover_variables()  # type: ignore[misc]
+        asyncio.run(connector.discover_variables())
     with pytest.raises(RuntimeError, match="not configured"):
-        import asyncio
-        asyncio.run(connector.subscribe({"ns=2;s=R101.Temperature": ("reactor.temperature", "degC")}, lambda message: None))  # type: ignore[misc]
+        asyncio.run(
+            connector.subscribe({"ns=2;s=R101.Temperature": ("reactor.temperature", "degC")}, _noop)
+        )
 
 
 def test_mqtt_subscriber_is_read_only_by_name() -> None:

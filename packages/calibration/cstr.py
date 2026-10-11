@@ -100,7 +100,9 @@ class HistoricalCSTRSeries:
     @property
     def elapsed_seconds(self) -> NDArray[np.float64]:
         start = self.timestamps[0]
-        return np.asarray([(stamp - start).total_seconds() for stamp in self.timestamps], dtype=np.float64)
+        return np.asarray(
+            [(stamp - start).total_seconds() for stamp in self.timestamps], dtype=np.float64
+        )
 
 
 @dataclass(frozen=True)
@@ -379,7 +381,8 @@ def calibrate_cstr(
         raise ValueError("U and A are not separately identifiable through UA; calibrate only one")
     if series.feed_flow_source_unit == "kg/s" and "rho_kg_m3" in bounds:
         raise ValueError(
-            "Density cannot be calibrated independently when mass flow is converted to volumetric flow using the parameter-set density"
+            "Density cannot be calibrated independently when mass flow is converted "
+            "to volumetric flow using the parameter-set density"
         )
     names = tuple(bounds)
     if any(name not in _PARAMETER_SPECS for name in names):

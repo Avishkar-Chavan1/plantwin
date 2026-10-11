@@ -29,7 +29,8 @@ class SyntheticCSTRPlant:
 
     def inputs_at(self, seconds: float) -> CSTRInputs:
         hours = seconds / 3600.0
-        # Days 1-7: normal; temperature variation; feed increase; cooling degradation; composition change; sensor drift; recovery.
+        # Days 1-7: normal; temperature variation; feed increase; cooling degradation;
+        # composition change; sensor drift; recovery.
         flow = 0.020 * (1.08 if 48 <= hours < 72 else 1.0)
         concentration = 100.0 * (1.07 if 96 <= hours < 120 else 1.0)
         cooling_temperature = 293.15 + (4.0 if 72 <= hours < 96 else 0.0)
@@ -67,7 +68,9 @@ class SyntheticCSTRPlant:
                 "FEED_FLOW": (convert(inputs.feed_flow_m3_s, "m3/s", "m3/h"), "m3/h", 0.16),
                 "FEED_TEMPERATURE": (convert(inputs.feed_temperature_k, "K", "degC"), "degC", 0.15),
                 "FEED_CONCENTRATION": (inputs.feed_concentration_a_mol_m3, "mol/m3", 0.45),
-                "COOLING_TEMPERATURE": (convert(inputs.cooling_temperature_k, "K", "degC"), "degC", 0.1),
+                "COOLING_TEMPERATURE": (
+                    convert(inputs.cooling_temperature_k, "K", "degC"), "degC", 0.1
+                ),
                 "COOLING_FLOW": (72.0 * (0.9 if 72 <= second / 3600 < 96 else 1.0), "m3/h", 0.2),
                 "AGITATOR_SPEED": (180.0, "rpm", 0.5),
                 "CONVERSION": (metrics.conversion * 100, "%", 0.15),
@@ -76,7 +79,8 @@ class SyntheticCSTRPlant:
                 "ENERGY_CONSUMPTION": (metrics.heat_removal_w / 1000, "kW", 2.0),
             }
             for tag, (actual, unit, noise) in values.items():
-                # One-percent communication gaps are materialized as quality events by the seeder instead of fake values.
+                # One-percent communication gaps are materialized as quality events by the
+                # seeder instead of fake values.
                 if self.random.random() < 0.01:
                     continue
                 drift = 0.0

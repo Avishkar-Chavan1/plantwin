@@ -113,5 +113,8 @@ class OptimizationService:
             inputs=candidate,
             objective=float(-solved.fun),
             constraint_status=status,
-            advisory="AI-generated engineering recommendation. Verify against plant operating procedures before implementation.",
+            advisory=(
+                "AI-generated engineering recommendation. Verify against plant "
+                "operating procedures before implementation."
+            ),
         )

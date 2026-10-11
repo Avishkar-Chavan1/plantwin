@@ -10,7 +10,6 @@ from alembic import op
 from apps.api.processtwin_api.database import Base
 from sqlalchemy import inspect
 
-
 revision = "0005_live_readonly_workflow"
 down_revision = "0004_readonly_twin_workflow"
 branch_labels = None

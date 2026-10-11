@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -23,6 +24,8 @@ from packages.data_ingestion.pipeline import (
     HistoricalObservation,
 )
 from packages.units import si_unit, to_si
+
+logger = logging.getLogger(__name__)
 
 
 def _load_pyarrow() -> tuple[Any, Any]:
@@ -413,7 +416,9 @@ class ChunkedImportProcessor:
                 total_chunks=1,
                 total_rows=total_rows,
                 processed_rows=len(observations),
-                failed_rows=sum(1 for o in observations if o.quality_status == QualityStatusName.BAD),
+                failed_rows=sum(
+                    1 for o in observations if o.quality_status == QualityStatusName.BAD
+                ),
                 chunk_results=[
                     ChunkResult(
                         chunk_index=0,
@@ -520,9 +525,9 @@ class ChunkedImportProcessor:
                     chunk_buffer = io.BytesIO(data)
                     observations = read_chunk_from_parquet(chunk_buffer)
                     all_observations.extend(observations)
-                except Exception:
-                    # If chunk read fails, it will be retried
-                    pass
+                except Exception as exc:
+                    # A failed chunk read is retried on the next resume pass.
+                    logger.warning("Chunk read failed for %s", chunk.object_path, exc_info=exc)
         return all_observations
 
 

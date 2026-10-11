@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from math import isfinite
 from statistics import median
 
@@ -39,7 +39,7 @@ class HistoricalObservation:
     quality_reasons: tuple[str, ...]
 
 
-def _timestamp(value: object) -> tuple[datetime | None, str | None]:
+def _timestamp(value: object, assume_tz: tzinfo | None = None) -> tuple[datetime | None, str | None]:
     text = "" if value is None else str(value).strip()
     if not text:
         return None, "TIMESTAMP_MISSING"
@@ -48,7 +48,9 @@ def _timestamp(value: object) -> tuple[datetime | None, str | None]:
     except ValueError:
         return None, "TIMESTAMP_INVALID"
     if parsed.tzinfo is None or parsed.utcoffset() is None:
-        return None, "TIMESTAMP_TIMEZONE_MISSING"
+        if assume_tz is None:
+            return None, "TIMESTAMP_TIMEZONE_MISSING"
+        parsed = parsed.replace(tzinfo=assume_tz)
     return parsed.astimezone(UTC), None
 
 
@@ -68,6 +70,7 @@ def inspect_historical_rows(
     mappings: Sequence[HistoricalMapping],
     *,
     timestamp_column: str = "timestamp",
+    assume_timezone: tzinfo | None = None,
 ) -> list[HistoricalObservation]:
     """Normalize each mapped value to SI and classify anomalies without dropping records."""
     if not rows:
@@ -79,9 +82,15 @@ def inspect_historical_rows(
     headers = set(rows[0])
     missing_columns = {mapping.source_tag for mapping in mappings} - headers
     if timestamp_column not in headers or missing_columns:
-        names = ", ".join(sorted(missing_columns))
+        problems: list[str] = []
+        if timestamp_column not in headers:
+            problems.append(f"timestamp column '{timestamp_column}' was not found")
+        if missing_columns:
+            problems.append("mapped columns not found in the file: " + ", ".join(sorted(missing_columns)))
+        detected = ", ".join(str(name) for name in rows[0])
         raise ValueError(
-            f"Missing required timestamp or mapped columns: {names or timestamp_column}"
+            "Missing required timestamp or mapped columns: " + "; ".join(problems)
+            + f". Columns detected in the file: {detected}. Map your tags to these column names."
         )
 
     unit_targets: dict[str, str] = {}
@@ -102,7 +111,7 @@ def inspect_historical_rows(
     seen_times: dict[str, set[datetime]] = {mapping.source_tag: set() for mapping in mappings}
 
     for row_number, row in enumerate(rows, start=2):
-        timestamp, timestamp_issue = _timestamp(row.get(timestamp_column))
+        timestamp, timestamp_issue = _timestamp(row.get(timestamp_column), assume_timezone)
         original_timestamp = "" if row.get(timestamp_column) is None else str(row[timestamp_column])
         for mapping in mappings:
             raw_value = row.get(mapping.source_tag)

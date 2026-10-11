@@ -84,8 +84,8 @@ def seed() -> dict[str, Any]:
 
 
 def test_rls_policies_are_enabled_on_every_protected_table(seed: dict[str, Any]) -> None:
-    """Migration 0006 must have armed all 28 tenant tables plus membership/token tables."""
-    from apps.api.processtwin_api.database import SessionLocal
+    """Migrations 0006 and 0009 must have armed every tenant table plus membership/token tables."""
+    from apps.api.processtwin_api.database import Base, SessionLocal
     from sqlalchemy import text
 
     with SessionLocal() as session:
@@ -98,8 +98,25 @@ def test_rls_policies_are_enabled_on_every_protected_table(seed: dict[str, Any])
         row_security = session.scalar(
             text("SELECT relrowsecurity FROM pg_class WHERE relname = 'plants'")
         )
-    assert policy_count == 30, f"expected 30 processtwin_* policies, found {policy_count}"
+        protected = set(
+            session.scalars(
+                text(
+                    "SELECT tablename FROM pg_policies "
+                    "WHERE schemaname = 'public' AND policyname = 'processtwin_tenant_isolation'"
+                )
+            )
+        )
+    # 28 tables armed by 0006 + 2 membership/refresh-token policies + 6 connector/import tables (0009).
+    assert policy_count == 36, f"expected 36 processtwin_* policies, found {policy_count}"
     assert row_security is True, "ROW LEVEL SECURITY is not enabled on plants"
+    # Every ORM table carrying an organization_id must be tenant-protected (no table left behind).
+    exempt = {"organizations", "organization_memberships", "refresh_tokens", "users"}
+    tenant_tables = {
+        name
+        for name, table in Base.metadata.tables.items()
+        if "organization_id" in table.columns and name not in exempt
+    }
+    assert tenant_tables - protected == set(), f"tables without RLS: {sorted(tenant_tables - protected)}"
 
 
 def test_unscoped_session_sees_no_tenant_rows(seed: dict[str, Any]) -> None:
@@ -203,5 +220,8 @@ def test_end_to_end_api_flow_under_enforced_rls(seed: dict[str, Any]) -> None:
 
         logout = client.post("/api/v1/auth/logout", json={"refresh_token": refresh1.json()["refresh_token"]})
         assert logout.status_code == 200, logout.text
-        reuse = client.post("/api/v1/auth/logout", json={"refresh_token": refresh1.json()["refresh_token"]})
+        # Logout is idempotent by design (clients may retry), but the revoked token is dead.
+        repeat = client.post("/api/v1/auth/logout", json={"refresh_token": refresh1.json()["refresh_token"]})
+        assert repeat.status_code == 200, repeat.text
+        reuse = client.post("/api/v1/auth/refresh", json={"refresh_token": refresh1.json()["refresh_token"]})
         assert reuse.status_code == 401, reuse.text

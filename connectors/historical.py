@@ -179,7 +179,9 @@ class RestHistoricalSource:
             raise ValueError("REST historical source returned no data rows")
         return all_rows
 
-    def _request_with_retry(self, client: httpx.Client, method: str, url: str, **kwargs: Any) -> httpx.Response:
+    def _request_with_retry(
+        self, client: httpx.Client, method: str, url: str, **kwargs: Any
+    ) -> httpx.Response:
         last_exc: Exception | None = None
         for attempt in range(self.config.max_retries + 1):
             try:
@@ -337,7 +339,10 @@ class SamplingAwareRestSource(RestHistoricalSource):
 
         if len(timestamps) >= 2:
             timestamps.sort()
-            intervals = [(timestamps[i+1] - timestamps[i]).total_seconds() for i in range(len(timestamps)-1)]
+            intervals = [
+                (timestamps[i+1] - timestamps[i]).total_seconds()
+                for i in range(len(timestamps)-1)
+            ]
             self.detected_interval = sum(intervals) / len(intervals)
         else:
             self.detected_interval = self.expected_interval
@@ -348,13 +353,17 @@ class SamplingAwareRestSource(RestHistoricalSource):
 class SamplingAwareDatabaseSource(DatabaseHistoricalSource):
     """Database source with sampling rate detection and gap analysis."""
 
-    def __init__(self, config: DatabaseSourceConfig, expected_interval_seconds: float = 60.0) -> None:
+    def __init__(
+        self, config: DatabaseSourceConfig, expected_interval_seconds: float = 60.0
+    ) -> None:
         super().__init__(config)
         self.expected_interval = expected_interval_seconds
         self.detected_interval: float | None = None
         self.gaps: list[tuple[datetime, datetime, float]] = []
 
-    def read_with_sampling_analysis(self, raw: bytes) -> tuple[list[dict[str, object]], float, list[tuple[datetime, datetime, float]]]:
+    def read_with_sampling_analysis(
+        self, raw: bytes
+    ) -> tuple[list[dict[str, object]], float, list[tuple[datetime, datetime, float]]]:
         """Read data and analyze sampling intervals and gaps."""
         rows = self.read(raw)
         if len(rows) < 2:
@@ -380,7 +389,10 @@ class SamplingAwareDatabaseSource(DatabaseHistoricalSource):
 
         if len(timestamps) >= 2:
             timestamps.sort()
-            intervals = [(timestamps[i+1] - timestamps[i]).total_seconds() for i in range(len(timestamps)-1)]
+            intervals = [
+                (timestamps[i+1] - timestamps[i]).total_seconds()
+                for i in range(len(timestamps)-1)
+            ]
             self.detected_interval = sum(intervals) / len(intervals)
 
             # Detect gaps (interval > 3x expected)

@@ -1,53 +1,38 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
+/**
+ * Navigation gate only. The marker cookie is written by the client after a successful sign-in
+ * and carries no credential; it merely lets us send an unauthenticated visitor to /login before
+ * any authenticated page shell is served. Authorization is always enforced by the API, and the
+ * client-side AuthGuard validates the real session (token + /auth/me) before rendering data.
+ *
+ * `/` is the public marketing landing page: anonymous visitors may read it, while a visitor
+ * who already holds the session marker is sent straight into the workspace.
+ */
+const SESSION_MARKER = "processtwin-session";
+
 export function middleware(request: NextRequest) {
-  const { pathname } = request.nextUrl;
+  const { pathname, search } = request.nextUrl;
+  const hasSession = request.cookies.get(SESSION_MARKER)?.value === "1";
 
-  // Allow public paths
-  if (
-    pathname.startsWith("/login") ||
-    pathname.startsWith("/api") ||
-    pathname.startsWith("/_next") ||
-    pathname.startsWith("/favicon.ico") ||
-    pathname.startsWith("/static")
-  ) {
-    return NextResponse.next();
+  if (pathname === "/") {
+    if (!hasSession) return NextResponse.next();
+    const dashboard = request.nextUrl.clone();
+    dashboard.pathname = "/dashboard";
+    dashboard.search = "";
+    return NextResponse.redirect(dashboard);
   }
 
-  // Check for auth cookie
-  const token = request.cookies.get("processtwin-token")?.value;
-  const organization = request.cookies.get("processtwin-org")?.value;
-
-  if (!token || !organization) {
-    // Redirect to login with redirect parameter
-    const loginUrl = new URL("/login", request.url);
-    loginUrl.searchParams.set("redirect", pathname);
-    return NextResponse.redirect(loginUrl);
-  }
-
-  // Add auth headers for API routes if needed
-  const requestHeaders = new Headers(request.headers);
-  requestHeaders.set("x-auth-token", token);
-  requestHeaders.set("x-auth-org", organization);
-
-  return NextResponse.next({
-    request: {
-      headers: requestHeaders,
-    },
-  });
+  if (hasSession) return NextResponse.next();
+  const loginUrl = request.nextUrl.clone();
+  loginUrl.pathname = "/login";
+  loginUrl.search = "";
+  loginUrl.searchParams.set("redirect", `${pathname}${search}`);
+  return NextResponse.redirect(loginUrl);
 }
 
 export const config = {
-  matcher: [
-    /*
-     * Match all request paths except for the ones starting with:
-     * - api (API routes)
-     * - _next/static (static files)
-     * - _next/image (image optimization files)
-     * - favicon.ico (favicon file)
-     * - login (login page)
-     */
-    "/((?!api|_next/static|_next/image|favicon.ico|login).*)",
-  ],
+  // Everything except the login page, Next internals and static assets.
+  matcher: ["/((?!login|_next/static|_next/image|favicon.ico|robots.txt|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)"],
 };

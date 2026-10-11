@@ -180,7 +180,9 @@ class Settings(BaseSettings):
             if self.metrics_token is None or len(self.metrics_token) < 32:
                 raise ValueError("Production requires METRICS_TOKEN with at least 32 characters")
             if self.demo_email or self.demo_password:
-                raise ValueError("DEMO_EMAIL and DEMO_PASSWORD must not be configured in production")
+                raise ValueError(
+                    "DEMO_EMAIL and DEMO_PASSWORD must not be configured in production"
+                )
             for origin in self.cors_origins_parsed:
                 parsed_origin = urlparse(origin)
                 if parsed_origin.scheme != "https":

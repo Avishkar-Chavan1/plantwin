@@ -80,7 +80,7 @@ export default function Settings() {
         <p className="muted">
           ProcessTwin is a monitoring, simulation and advisory product. It has no write path to PLCs, DCS or
           SCADA equipment: connectors are read-only by design and every simulation or recommendation is
-          labelled with its model validity. Any implementation of a recommendation happens in the plant's own
+          labelled with its model validity. Any implementation of a recommendation happens in the plant&apos;s own
           control system after human review.
         </p>
         <div className="actions">

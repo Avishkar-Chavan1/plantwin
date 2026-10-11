@@ -77,7 +77,8 @@ def test_validation_requires_actual_evaluation_and_governed_stage() -> None:
                 "bias": {"minimum": -0.2, "maximum": 0.2},
             }
         },
-        "review_note": "Reviewed independent held-out engineering evaluation against the agreed acceptance limits.",
+        "review_note": "Reviewed independent held-out engineering evaluation against "
+        "the agreed acceptance limits.",
     }
     response = client.post(f"/api/v1/models/{model_id}/validate", headers=headers, json=body)
     assert response.status_code == 200, response.text
@@ -154,7 +155,8 @@ def test_validation_rejects_failed_acceptance_criteria() -> None:
         json={
             "evaluation_id": str(evaluation_id),
             "acceptance_limits": {"temperature_k": {"mae": {"maximum": 1.0}}},
-            "review_note": "This candidate does not satisfy the specified temperature error acceptance criterion.",
+            "review_note": "This candidate does not satisfy the specified temperature "
+            "error acceptance criterion.",
         },
     )
     assert response.status_code == 422

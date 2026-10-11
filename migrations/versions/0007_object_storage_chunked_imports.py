@@ -5,7 +5,6 @@ Revises: 0006_security_rls_refresh_tokens
 Create Date: 2026-10-03
 """
 
-from alembic import op
 
 revision = "0007_object_storage_chunked_imports"
 down_revision = "0006_security_rls_refresh_tokens"

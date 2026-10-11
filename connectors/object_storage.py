@@ -42,27 +42,32 @@ class ObjectStorageService:
 
     def _get_client(self) -> Minio:
         if self._client is None:
-            if not all([self._endpoint, self._access_key, self._secret_key, self._bucket]):
+            endpoint = self._endpoint
+            access_key = self._access_key
+            secret_key = self._secret_key
+            bucket = self._bucket
+            if endpoint is None or access_key is None or secret_key is None or bucket is None:
                 raise ObjectStorageError(
                     "Object storage not configured: MINIO_ENDPOINT, MINIO_ACCESS_KEY, "
                     "MINIO_SECRET_KEY, and MINIO_BUCKET must be set"
                 )
-            # mypy: these are checked to be non-None above
-            assert self._endpoint is not None
-            assert self._access_key is not None
-            assert self._secret_key is not None
-            assert self._bucket is not None
             self._client = Minio(
-                self._endpoint,
-                access_key=self._access_key,
-                secret_key=self._secret_key,
+                endpoint,
+                access_key=access_key,
+                secret_key=secret_key,
                 secure=self._secure,
             )
             # Ensure bucket exists
-            assert self._bucket is not None
-            if not self._client.bucket_exists(self._bucket):
-                self._client.make_bucket(self._bucket)
+            if not self._client.bucket_exists(bucket):
+                self._client.make_bucket(bucket)
         return self._client
+
+    def _bucket_name(self) -> str:
+        """Return the configured bucket; `_get_client` has already validated configuration."""
+        bucket = self._bucket
+        if bucket is None:
+            raise ObjectStorageError("Object storage not configured: MINIO_BUCKET must be set")
+        return bucket
 
     def upload(
         self,
@@ -75,9 +80,9 @@ class ObjectStorageService:
         client = self._get_client()
         checksum = hashlib.sha256(data).hexdigest()
         stream = io.BytesIO(data)
-        assert self._bucket is not None
+        bucket = self._bucket_name()
         result = client.put_object(
-            self._bucket,
+            bucket,
             object_key,
             stream,
             length=len(data),
@@ -85,7 +90,7 @@ class ObjectStorageService:
             metadata=metadata or {},  # type: ignore[arg-type]
         )
         return UploadResult(
-            bucket=self._bucket,
+            bucket=bucket,
             object_key=object_key,
             size_bytes=len(data),
             checksum_sha256=checksum,
@@ -118,9 +123,9 @@ class ObjectStorageService:
         checksum = hasher.hexdigest()
         
         data_stream = io.BytesIO(data)
-        assert self._bucket is not None
+        bucket = self._bucket_name()
         result = client.put_object(
-            self._bucket,
+            bucket,
             object_key,
             data_stream,
             length=len(data),
@@ -128,7 +133,7 @@ class ObjectStorageService:
             metadata=metadata or {},  # type: ignore[arg-type]
         )
         return UploadResult(
-            bucket=self._bucket,
+            bucket=bucket,
             object_key=object_key,
             size_bytes=len(data),
             checksum_sha256=checksum,
@@ -140,9 +145,9 @@ class ObjectStorageService:
     def download(self, object_key: str) -> bytes:
         """Download object as bytes."""
         client = self._get_client()
-        assert self._bucket is not None
+        bucket = self._bucket_name()
         try:
-            response = client.get_object(self._bucket, object_key)
+            response = client.get_object(bucket, object_key)
             return response.read()
         except S3Error as exc:
             if exc.code == "NoSuchKey":
@@ -152,9 +157,9 @@ class ObjectStorageService:
     def download_streaming(self, object_key: str) -> Generator[bytes, None, None]:
         """Download object as a stream of chunks."""
         client = self._get_client()
-        assert self._bucket is not None
+        bucket = self._bucket_name()
         try:
-            response = client.get_object(self._bucket, object_key)
+            response = client.get_object(bucket, object_key)
             while True:
                 chunk = response.read(8192)
                 if not chunk:
@@ -171,15 +176,15 @@ class ObjectStorageService:
     def delete(self, object_key: str) -> None:
         """Delete an object."""
         client = self._get_client()
-        assert self._bucket is not None
-        client.remove_object(self._bucket, object_key)
+        bucket = self._bucket_name()
+        client.remove_object(bucket, object_key)
 
     def exists(self, object_key: str) -> bool:
         """Check if object exists."""
         client = self._get_client()
-        assert self._bucket is not None
+        bucket = self._bucket_name()
         try:
-            client.stat_object(self._bucket, object_key)
+            client.stat_object(bucket, object_key)
             return True
         except S3Error as exc:
             if exc.code == "NoSuchKey":
@@ -191,9 +196,12 @@ class ObjectStorageService:
     ) -> str:
         """Generate a presigned URL for downloading."""
         client = self._get_client()
-        assert self._bucket is not None
+        bucket = self._bucket_name()
         from datetime import timedelta
-        return client.presigned_get_object(self._bucket, object_key, expires=timedelta(seconds=expires_seconds))
+
+        return client.presigned_get_object(
+            bucket, object_key, expires=timedelta(seconds=expires_seconds)
+        )
 
     def record_artifact(
         self,

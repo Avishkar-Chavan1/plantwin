@@ -4,8 +4,15 @@ from alembic.ddl import postgresql
 from alembic.ddl.impl import _impls
 from apps.api.processtwin_api.config import get_settings
 from apps.api.processtwin_api.database import Base
-from sqlalchemy import Column, MetaData, PrimaryKeyConstraint, String, Table
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import (
+    Column,
+    MetaData,
+    PrimaryKeyConstraint,
+    String,
+    Table,
+    engine_from_config,
+    pool,
+)
 
 
 class ProcessTwinPostgresqlImpl(postgresql.PostgresqlImpl):

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from statistics import median
 from typing import Any
 from uuid import UUID
@@ -153,6 +153,9 @@ def _health_factors(
 class LiveIngestionGateway:
     """Validate, retain and synchronize read-only measurements into tenant twin state."""
 
+    def __init__(self, min_sync_interval_s: float = 0.0) -> None:
+        self.min_sync_interval_s = min_sync_interval_s
+
     def ingest(
         self,
         session: Session,
@@ -194,6 +197,13 @@ class LiveIngestionGateway:
         if message.timestamp_source == "RECEIVED" and status is QualityStatusName.GOOD:
             status = QualityStatusName.SUSPECT
             reason = "SOURCE_TIMESTAMP_MISSING; RECEIVED_AT_USED"
+        if message.quality == "BAD":
+            # Bad protocol status: retained for audit but never eligible for the twin or advice.
+            status = QualityStatusName.BAD
+            reason = "SOURCE_STATUS_BAD"
+        elif message.quality == "UNCERTAIN" and status is QualityStatusName.GOOD:
+            status = QualityStatusName.SUSPECT
+            reason = "SOURCE_STATUS_UNCERTAIN"
         duplicate = session.scalar(
             select(SensorReading.id).where(
                 SensorReading.organization_id == source.organization_id,
@@ -211,9 +221,8 @@ class LiveIngestionGateway:
                     detail="Duplicate live observation was not inserted",
                 )
             )
-            source.error_count += 1
-            source.last_error = "Duplicate sensor timestamp"
-            source.status = "ERROR"
+            # A repeated source timestamp is a data-quality event, not a connection fault:
+            # the link is demonstrably alive, so the source keeps its health state.
             source.last_message_at = message.received_at
             session.flush()
             return {"accepted": False, "quality_status": "BAD", "reason": "DUPLICATE_TIMESTAMP"}
@@ -252,6 +261,27 @@ class LiveIngestionGateway:
         source.status = "CONNECTED"
         source.last_error = None
         session.flush()
+        if self.min_sync_interval_s > 0:
+            # Twin synchronisation re-reads history for every mapped sensor. At OPC-UA
+            # sampling rates that dominates database load, so the gateway coalesces it.
+            recent = session.scalar(
+                select(TwinState.id)
+                .where(
+                    TwinState.organization_id == source.organization_id,
+                    TwinState.equipment_id == equipment.id,
+                    TwinState.timestamp >= now - timedelta(seconds=self.min_sync_interval_s),
+                )
+                .limit(1)
+            )
+            if recent is not None:
+                return {
+                    "accepted": True,
+                    "reading_id": str(reading.id),
+                    "quality_status": status.value,
+                    "quality_reason": reason,
+                    "twin_state_id": None,
+                    "potential_anomaly_id": None,
+                }
         state, anomaly = self.synchronize(session, equipment.id, source.organization_id, now)
         return {
             "accepted": True,
@@ -670,16 +700,32 @@ class LiveIngestionGateway:
             potential_contributing_variables=sorted(set(contributors)),
         )
         session.add(anomaly)
-        session.add(
-            Alert(
-                organization_id=organization_id,
-                equipment_id=equipment_id,
-                severity=AlertSeverity.WARNING,
-                reason=f"POTENTIAL ANOMALY, score {score:.2f}; potential contributing variables: {', '.join(anomaly.potential_contributing_variables)}",
-                status="OPEN",
-                occurred_at=twin_state.timestamp,
+        # One open anomaly alert per equipment at a time: a continuously-flagged condition must
+        # not create a new alert on every telemetry message (alert flooding hides real events).
+        open_alert = session.scalar(
+            select(Alert.id)
+            .where(
+                Alert.organization_id == organization_id,
+                Alert.equipment_id == equipment_id,
+                Alert.status == "OPEN",
+                Alert.reason.like("POTENTIAL ANOMALY%"),
             )
+            .limit(1)
         )
+        if open_alert is None:
+            session.add(
+                Alert(
+                    organization_id=organization_id,
+                    equipment_id=equipment_id,
+                    severity=AlertSeverity.WARNING,
+                    reason=(
+                        f"POTENTIAL ANOMALY, score {score:.2f}; potential contributing variables: "
+                        f"{', '.join(anomaly.potential_contributing_variables)}"
+                    ),
+                    status="OPEN",
+                    occurred_at=twin_state.timestamp,
+                )
+            )
         return anomaly
 
     @staticmethod

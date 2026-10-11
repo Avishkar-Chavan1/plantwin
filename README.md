@@ -37,7 +37,7 @@ Copy-Item .env.example .env
 make demo
 ```
 
-`make demo` is self-provisioning: it starts the infrastructure, applies the Alembic revision, creates the tenant/user/R-101/sensors, generates seven days of **simulated** history, registers a validation model, and starts the API, simulator, and dashboard. The dashboard is served on `http://localhost:3000`.
+`make demo` is self-provisioning: it starts the infrastructure, applies the Alembic revision, creates the tenant/user/R-101/sensors, generates seven days of **simulated** history, registers a validation model, and starts the API, simulator, and dashboard. The public landing page is served at `http://localhost:3000/` and the workspace at `http://localhost:3000/dashboard`.
 
 ## Architecture
 
@@ -52,7 +52,7 @@ The Python packages are intentionally separate from delivery applications:
 - `apps/simulator` generates explicitly simulated—not real—plant readings.
 - `connectors` contain interfaces and validated adapters; they never imply live connectivity.
 
-See [the system architecture](docs/architecture/system.md), [CSTR equations](docs/engineering/cstr.md), [API guide](docs/api/api.md), [security guide](docs/security/security.md) and [production deployment notes](docs/deployment/production.md).
+See [the system architecture](docs/architecture/system.md), [CSTR equations](docs/engineering/cstr.md), [API guide](docs/api/api.md), [security guide](docs/security/security.md) and [production deployment notes](docs/deployment/production.md). Launch readiness is tracked in the [launch-readiness audit](docs/LAUNCH_READINESS_AUDIT.md) and the [launch checklist](docs/LAUNCH_CHECKLIST.md).
 
 Historical CSV and optional Parquet imports, configurable tag mapping, SI normalization, data-quality reporting and exploration are documented in [the historical data import guide](docs/data-import.md). Imported datasets are user-supplied and are distinct from the simulator's synthetic demo data.
 

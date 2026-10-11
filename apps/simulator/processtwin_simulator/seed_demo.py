@@ -157,6 +157,11 @@ def seed(hours: float) -> None:
             plant = session.scalar(
                 select(Plant).where(Plant.organization_id == existing.id)
             )
+            if plant is not None and plant.name == "Demo Chemical Plant":
+                # Label-only rename for databases seeded before the wording change.
+                plant.name = "Simulated CSTR Plant"
+                plant.location = "Simulation only - no physical site"
+                session.commit()
             _ensure_sensors(session, existing.id)
             _ensure_simulator_source(session, existing.id, plant.id if plant else None)
             _synchronize_equipment(session, existing.id)
@@ -175,8 +180,8 @@ def seed(hours: float) -> None:
 
         plant = Plant(
             organization_id=organization.id,
-            name="Demo Chemical Plant",
-            location="Synthetic reference plant",
+            name="Simulated CSTR Plant",
+            location="Simulation only - no physical site",
         )
         session.add(plant)
         session.flush()

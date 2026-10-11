@@ -103,11 +103,14 @@ def test_read_only_source_ingestion_twin_anomaly_optimization_review_audit() -> 
         last_result: dict[str, object] = {}
         for index in range(12):
             stamp = base + timedelta(seconds=index * 5)
+            # Real instruments are noisy; perfectly constant values are (correctly) flagged as a
+            # stuck sensor, which would make every input SUSPECT and withhold any recommendation.
+            jitter = 0.01 * (index % 3)
             values = {
-                "feed_flow": (72.0, "m3/h"),
-                "feed_temperature": (180.0, "degC"),
-                "feed_concentration": (100.0, "mol/m3"),
-                "cooling_temperature": (20.0, "degC"),
+                "feed_flow": (72.0 + jitter, "m3/h"),
+                "feed_temperature": (180.0 + jitter, "degC"),
+                "feed_concentration": (100.0 + jitter, "mol/m3"),
+                "cooling_temperature": (20.0 + jitter, "degC"),
                 "reactor_temperature": (180.0 + (0.1 if index % 2 else -0.1), "degC"),
             }
             for suffix, (value, unit) in values.items():
@@ -238,7 +241,7 @@ def test_read_only_source_ingestion_twin_anomaly_optimization_review_audit() -> 
     )
     assert optimization.status_code == 200, optimization.text
     assert optimization.json()["constraints"]["status"] == "PASS"
-    assert optimization.json()["recommendation_id"]
+    assert optimization.json()["recommendation_id"], optimization.json()["recommendation_gate"]
     recommendation_id = optimization.json()["recommendation_id"]
     assert optimization.json()["model_validity"] == "VALIDATED_MODEL_RANGE"
     review = client.post(

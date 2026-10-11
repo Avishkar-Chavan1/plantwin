@@ -2,22 +2,17 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "./auth-provider";
+import { API_URL, ApiError, describeFailure, readErrorMessage } from "./api-client";
 
-const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-
+export { ApiError } from "./api-client";
 export type ApiHeaders = { Authorization: string; "X-Organization-ID": string; "Content-Type": string };
 export type PlantSummary = { id: string; name: string; location: string | null };
+export type ApiInit = RequestInit & { json?: unknown; timeoutMs?: number };
 
-export class ApiError extends Error {
-  status: number;
-  code?: string;
-
-  constructor(status: number, message: string, code?: string) {
-    super(message);
-    this.status = status;
-    this.code = code;
-  }
-}
+/** Summary refresh cadence while the tab is visible; paused when hidden, backed off on errors. */
+const SUMMARY_POLL_MS = 15_000;
+const SUMMARY_ERROR_POLL_MS = 45_000;
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 type WorkspaceData = {
   summary: Record<string, unknown> | null;
@@ -31,24 +26,14 @@ type WorkspaceData = {
   setMessage: (message: string) => void;
   refresh: () => Promise<void>;
   /**
-   * Authenticated fetch with one automatic retry after a token refresh.
-   * JSON bodies are serialized and given the JSON content type; FormData is
-   * passed through untouched so the browser can set the multipart boundary.
+   * Authenticated fetch with a timeout, one automatic retry after a token refresh, and network
+   * failures surfaced as `ApiError` (status 0) rather than raw TypeErrors. JSON bodies are
+   * serialized; FormData is passed through so the browser sets the multipart boundary.
    */
-  apiFetch: (path: string, init?: RequestInit & { json?: unknown }) => Promise<Response>;
+  apiFetch: (path: string, init?: ApiInit) => Promise<Response>;
 };
 
 const WorkspaceDataContext = createContext<WorkspaceData | null>(null);
-
-async function responseMessage(response: Response, fallback: string) {
-  try {
-    const body = (await response.json()) as { detail?: { message?: string } | string; error?: { message?: string } };
-    if (typeof body.detail === "string") return body.detail;
-    return body.detail?.message ?? body.error?.message ?? fallback;
-  } catch {
-    return fallback;
-  }
-}
 
 export function WorkspaceDataProvider({ children }: { children: React.ReactNode }) {
   const { token, organization, refreshSession } = useAuth();
@@ -58,6 +43,8 @@ export function WorkspaceDataProvider({ children }: { children: React.ReactNode 
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const inFlight = useRef<AbortController | null>(null);
+  const loadedOnce = useRef(false);
+  const failing = useRef(false);
 
   const headers = useMemo<ApiHeaders | null>(() => token && organization ? {
     Authorization: `Bearer ${token}`,
@@ -65,36 +52,48 @@ export function WorkspaceDataProvider({ children }: { children: React.ReactNode 
     "Content-Type": "application/json",
   } : null, [token, organization]);
 
-  const apiFetch = useCallback(async (path: string, init: RequestInit & { json?: unknown } = {}) => {
+  const apiFetch = useCallback(async (path: string, init: ApiInit = {}) => {
     if (!headers) throw new ApiError(401, "Your session has ended. Sign in again.");
-    const { json, ...rest } = init;
-    const buildInit = (authorization: string): RequestInit => {
+    const { json, timeoutMs = DEFAULT_TIMEOUT_MS, signal: callerSignal, ...rest } = init;
+    const send = async (authorization: string) => {
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(new DOMException("timeout", "TimeoutError")), timeoutMs);
+      const abortFromCaller = () => controller.abort(callerSignal?.reason);
+      callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
       const requestHeaders: Record<string, string> = {
+        ...(rest.headers as Record<string, string> | undefined),
         Authorization: authorization,
         "X-Organization-ID": headers["X-Organization-ID"],
       };
+      let body = rest.body;
       if (json !== undefined) {
         requestHeaders["Content-Type"] = "application/json";
-        return { ...rest, headers: requestHeaders, body: JSON.stringify(json) };
+        body = JSON.stringify(json);
       }
-      if (rest.body instanceof FormData || rest.body instanceof Blob || typeof rest.body === "string") {
-        // Leave multipart/binary bodies to the caller; only add auth headers.
-        return { ...rest, headers: { ...rest.headers, Authorization: authorization, "X-Organization-ID": headers["X-Organization-ID"] } };
+      // A body implies a write to ProcessTwin's own API; never let it silently become a GET.
+      const method = rest.method ?? (body !== undefined && body !== null ? "POST" : "GET");
+      try {
+        return await fetch(`${API_URL}${path}`, { ...rest, method, headers: requestHeaders, body, signal: controller.signal });
+      } catch (caught) {
+        if (callerSignal?.aborted) throw caught; // caller cancelled: not a failure to report
+        throw new ApiError(0, describeFailure(caught, timeoutMs));
+      } finally {
+        window.clearTimeout(timer);
+        callerSignal?.removeEventListener("abort", abortFromCaller);
       }
-      requestHeaders["Content-Type"] = "application/json";
-      return { ...rest, headers: { ...rest.headers, ...requestHeaders } };
     };
 
-    let response = await fetch(`${apiUrl}${path}`, buildInit(headers.Authorization));
+    let response = await send(headers.Authorization);
     if (response.status === 401) {
       // Access tokens expire; rotate once and retry before surfacing an error.
       const renewed = await refreshSession();
-      if (renewed) {
-        response = await fetch(`${apiUrl}${path}`, buildInit(renewed));
-      }
+      if (renewed) response = await send(`Bearer ${renewed}`);
     }
     return response;
   }, [headers, refreshSession]);
+
+  const apiFetchRef = useRef(apiFetch);
+  apiFetchRef.current = apiFetch;
 
   const refresh = useCallback(async () => {
     if (!headers) {
@@ -104,15 +103,15 @@ export function WorkspaceDataProvider({ children }: { children: React.ReactNode 
     inFlight.current?.abort();
     const controller = new AbortController();
     inFlight.current = controller;
-    setIsLoading(true);
-    setError(null);
+    // Only the first load shows a spinner; background refreshes keep the current data on screen.
+    if (!loadedOnce.current) setIsLoading(true);
     try {
       const [summaryResponse, plantsResponse] = await Promise.all([
-        fetch(`${apiUrl}/api/v1/dashboard/summary`, { headers, signal: controller.signal }),
-        fetch(`${apiUrl}/api/v1/plants?limit=100`, { headers, signal: controller.signal }),
+        apiFetchRef.current("/api/v1/dashboard/summary", { signal: controller.signal }),
+        apiFetchRef.current("/api/v1/plants?limit=100", { signal: controller.signal }),
       ]);
-      if (!summaryResponse.ok) throw new Error(await responseMessage(summaryResponse, "Unable to load the process summary."));
-      if (!plantsResponse.ok) throw new Error(await responseMessage(plantsResponse, "Unable to load plants."));
+      if (!summaryResponse.ok) throw new ApiError(summaryResponse.status, await readErrorMessage(summaryResponse, "Unable to load the process summary."));
+      if (!plantsResponse.ok) throw new ApiError(plantsResponse.status, await readErrorMessage(plantsResponse, "Unable to load plants."));
       const [summaryBody, plantsBody] = await Promise.all([
         summaryResponse.json() as Promise<Record<string, unknown>>,
         plantsResponse.json() as Promise<{ items?: PlantSummary[] }>,
@@ -120,18 +119,38 @@ export function WorkspaceDataProvider({ children }: { children: React.ReactNode 
       if (controller.signal.aborted) return;
       setSummary(summaryBody);
       setPlants(plantsBody.items ?? []);
+      setError(null);
+      failing.current = false;
+      loadedOnce.current = true;
     } catch (caught) {
-      if ((caught as Error).name !== "AbortError") {
-        setError(caught instanceof Error ? caught.message : "Unable to load workspace data.");
-      }
+      if (controller.signal.aborted) return;
+      failing.current = true;
+      setError(caught instanceof Error ? caught.message : "Unable to load workspace data.");
     } finally {
       if (!controller.signal.aborted) setIsLoading(false);
     }
   }, [headers]);
 
+  // Initial load plus visibility-aware polling. A fresh timer chain starts whenever auth changes.
   useEffect(() => {
-    void refresh();
-    return () => inFlight.current?.abort();
+    let timer: number | undefined;
+    let stopped = false;
+    const schedule = (delay: number) => {
+      timer = window.setTimeout(async () => {
+        if (stopped) return;
+        if (document.visibilityState === "visible") await refresh();
+        if (!stopped) schedule(failing.current ? SUMMARY_ERROR_POLL_MS : SUMMARY_POLL_MS);
+      }, delay);
+    };
+    void refresh().then(() => { if (!stopped) schedule(SUMMARY_POLL_MS); });
+    const onVisible = () => { if (document.visibilityState === "visible") void refresh(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+      inFlight.current?.abort();
+    };
   }, [refresh]);
 
   const value = useMemo(() => ({

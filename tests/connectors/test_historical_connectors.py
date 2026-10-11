@@ -188,7 +188,8 @@ class TestRestHistoricalSource:
     def test_read_with_list_response(self, config: RestSourceConfig) -> None:
         source = RestHistoricalSource(config)
         mock_client = Mock()
-        # First call returns list with 2 items, second call returns empty list (pagination confirmation)
+        # First call returns a list with 2 items, the second an empty list
+        # (pagination confirmation)
         mock_response1 = Mock()
         mock_response1.json.return_value = [
             {"timestamp": "2024-01-01T00:00:00Z", "value": 1.0},
@@ -222,7 +223,12 @@ class TestRestHistoricalSource:
         # 3 calls: 1st fails, 2nd succeeds with 1 item, 3rd confirms no more data
         mock_client.request.side_effect = [
             httpx.RequestError("Connection failed"),
-            Mock(json=lambda: {"data": [{"timestamp": "2024-01-01T00:00:00Z", "value": 1.0}]}, raise_for_status=lambda: None),
+            Mock(
+                json=lambda: {
+                    "data": [{"timestamp": "2024-01-01T00:00:00Z", "value": 1.0}]
+                },
+                raise_for_status=lambda: None,
+            ),
             Mock(json=lambda: {"data": []}, raise_for_status=lambda: None),
         ]
         source._client = mock_client

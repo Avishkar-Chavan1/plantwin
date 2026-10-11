@@ -1,67 +1,57 @@
 "use client";
 
-import { FormEvent, useState, useEffect, Suspense } from "react";
+import { FormEvent, Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/auth-provider";
+import { safeRedirectTarget } from "@/components/api-client";
 
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { login } = useAuth();
-  const [message, setMessage] = useState("Sign in to access your organization’s read-only process intelligence workspace.");
+  const { login, token, organization, isLoading } = useAuth();
+  const [message, setMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [redirectTo, setRedirectTo] = useState("/dashboard");
+  const destination = safeRedirectTarget(searchParams?.get("redirect"));
 
-  // Get redirect from search params (set by middleware) - use useEffect to avoid render-phase state update
+  // Visiting /login while already signed in just continues into the application.
   useEffect(() => {
-    const redirectParam = searchParams?.get("redirect");
-    if (redirectParam) {
-      setRedirectTo(redirectParam);
-    }
-  }, [searchParams]);
+    if (!isLoading && token && organization) router.replace(destination);
+  }, [destination, isLoading, organization, router, token]);
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (isSubmitting) return;
-
     setIsSubmitting(true);
-    setMessage("Signing in...");
-
+    setMessage("");
     const form = new FormData(event.currentTarget);
-    const email = form.get("email") as string;
-    const password = form.get("password") as string;
-
-    const result = await login(email, password);
+    const result = await login(String(form.get("email") ?? "").trim(), String(form.get("password") ?? ""));
     if (!result.success) {
       setMessage(result.error ?? "Sign-in failed. Please try again.");
       setIsSubmitting(false);
       return;
     }
-    router.replace(redirectTo.startsWith("/") ? redirectTo : "/dashboard");
-    router.refresh();
+    router.replace(destination);
   }
 
   return (
     <main className="login">
       <section className="brand">
-        <p className="eyebrow">PROCESS INTELLIGENCE PLATFORM</p>
-        <h1>Physics-informed<br />industrial intelligence.</h1>
-        <p>Monitor, simulate and optimize—without sending control commands to the plant.</p>
+        <p className="eyebrow">PROCESS MONITORING · SIMULATION · ADVISORY</p>
+        <h1>ProcessTwin</h1>
+        <p>Read-only process intelligence. ProcessTwin observes, simulates and advises; it never sends commands to a plant.</p>
       </section>
-      <form className="login-card" onSubmit={handleLogin}>
-        <h2>Welcome back</h2>
+      <form className="login-card" onSubmit={handleLogin} aria-busy={isSubmitting}>
+        <h2>Sign in</h2>
         <label>
           Email
-          <input name="email" type="email" defaultValue="engineer@processtwin.demo" required />
+          <input name="email" type="email" autoComplete="username" required autoFocus />
         </label>
         <label>
           Password
-          <input name="password" type="password" defaultValue="demo-password-123!" required />
+          <input name="password" type="password" autoComplete="current-password" required />
         </label>
-        <button type="submit" disabled={isSubmitting}>
-          {isSubmitting ? "Signing in..." : "Sign in"}
-        </button>
-        <small>{message}</small>
+        <button type="submit" disabled={isSubmitting}>{isSubmitting ? "Signing in…" : "Sign in"}</button>
+        {message ? <small role="alert" className="form-error">{message}</small> : null}
       </form>
     </main>
   );
@@ -69,7 +59,7 @@ function LoginForm() {
 
 export default function Login() {
   return (
-    <Suspense fallback={<div className="login"><div>Loading...</div></div>}>
+    <Suspense fallback={<div className="loading-shell" role="status">Loading…</div>}>
       <LoginForm />
     </Suspense>
   );

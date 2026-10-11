@@ -8,7 +8,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 # Context variable for request ID correlation
-request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("request_id", default=None)
+request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "request_id", default=None
+)
 
 
 def set_request_id(request_id: str) -> None:
@@ -49,12 +51,21 @@ class SensitiveDataFilter(logging.Filter):
             record.msg = self._redact(record.msg)
         # Redact sensitive data in args
         if record.args:
-            record.args = tuple(self._redact(arg) if isinstance(arg, str) else arg for arg in record.args)
+            record.args = tuple(
+                self._redact(arg) if isinstance(arg, str) else arg for arg in record.args
+            )
         return True
 
     def _redact(self, text: str) -> str:
         for pattern in _SENSITIVE_PATTERNS:
-            text = pattern.sub(lambda m: f"{m.group().split('=')[0]}=***REDACTED***" if "=" in m.group() else f"{m.group().split(':')[0]}:***REDACTED***", text)
+            text = pattern.sub(
+                lambda m: (
+                    f"{m.group().split('=')[0]}=***REDACTED***"
+                    if "=" in m.group()
+                    else f"{m.group().split(':')[0]}:***REDACTED***"
+                ),
+                text,
+            )
         return text
 
 

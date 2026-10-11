@@ -126,7 +126,7 @@ def _raise(status_code: int, code: str, message: str) -> NoReturn:
 def _git_sha() -> str:
     try:
         return subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+            ["git", "rev-parse", "HEAD"],  # noqa: S607 - git is intentionally resolved from PATH
             check=True,
             capture_output=True,
             text=True,
@@ -216,7 +216,8 @@ def _historical_series(
     if len(common) < 10:
         raise CalibrationSeriesError(
             "At least 10 aligned GOOD samples for feed flow, feed temperature, feed concentration, "
-            "cooling temperature, and reactor temperature are required. Configure these canonical tag mappings."
+            "cooling temperature, and reactor temperature are required. Configure these "
+            "canonical tag mappings."
         )
     expected_units = {
         "reactor.feed_flow": {"m3/s", "kg/s"},
@@ -232,7 +233,8 @@ def _historical_series(
     for canonical, unit in canonical_units.items():
         if canonical in expected_units and unit not in expected_units[canonical]:
             raise CalibrationSeriesError(
-                f"Canonical signal {canonical} must be normalized to {sorted(expected_units[canonical])}; got {unit}"
+                f"Canonical signal {canonical} must be normalized to "
+                f"{sorted(expected_units[canonical])}; got {unit}"
             )
     columns: dict[str, NDArray[np.float64]] = {
         name: np.asarray([values[name] for _, values in common], dtype=np.float64)
@@ -467,7 +469,8 @@ def get_parameter_catalog(context: TenantDependency) -> dict[str, Any]:
     return {
         "units": "SI",
         "parameters": {name: item.as_dict() for name, item in parameter_catalog().items()},
-        "note": "Reference-model initial values are engineering defaults, not plant measurements or calibrated values.",
+        "note": "Reference-model initial values are engineering defaults, "
+        "not plant measurements or calibrated values.",
     }
 
 
@@ -597,7 +600,10 @@ def create_calibration(
             name=parameter_set.name,
             version=new_version,
             status="CALIBRATED",
-            description=f"Calibrated from dataset version {version.version}; parent set {parameter_set.id}",
+            description=(
+                f"Calibrated from dataset version {version.version}; "
+                f"parent set {parameter_set.id}"
+            ),
             parameters=calibrated_records,
             source=f"calibration_run:{calibration_id}",
             created_by=context.user.id,
@@ -767,7 +773,8 @@ def create_calibration(
             }
             for name, value in result.evaluations.items()
         },
-        "note": "CALIBRATED is not EVALUATED or VALIDATED. Calibration fit uses the chronological first 60%; later windows are reported separately.",
+        "note": "CALIBRATED is not EVALUATED or VALIDATED. Calibration fit uses the "
+        "chronological first 60%; later windows are reported separately.",
     }
 
 
@@ -803,7 +810,8 @@ def train_hybrid_model(
         _raise(
             422,
             "HYBRID_TARGET_MISSING",
-            "Map reactor.product_b (mol/m³) to compare measured yield against the CSTR physics prediction",
+            "Map reactor.product_b (mol/m³) to compare measured yield against the "
+            "CSTR physics prediction",
         )
     if np.any(series.feed_concentration_a_mol_m3 <= 0):
         _raise(
@@ -951,7 +959,8 @@ def train_hybrid_model(
         "training_comparisons": model_version.metrics["training_comparisons"],
         "validation_comparisons": model_version.metrics["validation_comparisons"],
         "test_comparisons": model_version.metrics["test_comparisons"],
-        "note": "Metrics are computed from this imported dataset's chronological partitions; this is not a claim of plant validation.",
+        "note": "Metrics are computed from this imported dataset's chronological "
+        "partitions; this is not a claim of plant validation.",
     }
 
 
@@ -1152,7 +1161,8 @@ def evaluate_model(
         "measured": measured,
         "physics_prediction": predicted,
         "residual": residuals,
-        "note": "Evaluation is an independent measurement comparison, not automatic validation or certification.",
+        "note": "Evaluation is an independent measurement comparison, "
+        "not automatic validation or certification.",
     }
 
 
@@ -1198,7 +1208,8 @@ def validate_model(
         _raise(
             422,
             "INDEPENDENT_EVALUATION_REQUIRED",
-            "Validation requires at least 10 measured observations from a successful independent evaluation",
+            "Validation requires at least 10 measured observations from a "
+            "successful independent evaluation",
         )
     failed: list[str] = []
     for signal, limits in payload.acceptance_limits.items():

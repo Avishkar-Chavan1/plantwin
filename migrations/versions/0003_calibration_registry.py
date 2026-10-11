@@ -10,7 +10,6 @@ from alembic import op
 from apps.api.processtwin_api.database import Base
 from sqlalchemy import JSON, Column, ForeignKey, String, Uuid, inspect
 
-
 revision = "0003_calibration_registry"
 down_revision = "0002_historical_datasets"
 branch_labels = None

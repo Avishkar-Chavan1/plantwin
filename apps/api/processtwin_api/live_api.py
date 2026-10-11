@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import and_, desc, select
+from sqlalchemy import and_, desc, func, select
+from sqlalchemy.orm import Session
 
 from .audit import append_audit
 from .auth import SessionDependency, TenantContext, require_roles, tenant_context
@@ -17,6 +18,7 @@ from .models import (
     Equipment,
     Plant,
     Sensor,
+    SensorReading,
     SourceTagMapping,
 )
 from .time_utils import as_utc
@@ -79,7 +81,20 @@ def _raise(code: str, message: str, status: int = 422) -> None:
     raise HTTPException(status, detail={"code": code, "message": message})
 
 
-def _source_payload(source: DataSource, now: datetime | None = None) -> dict[str, Any]:
+def enforce_endpoint_policy(source_type: str, endpoint: str) -> None:
+    """Shared production transport policy for every read-only source-configuration API."""
+    if not get_settings().is_production:
+        return
+    if source_type == "MQTT" and not endpoint.startswith("mqtts://"):
+        _raise("MQTT_TLS_REQUIRED", "Production MQTT sources must use mqtts://")
+    if source_type == "OPCUA":
+        _raise(
+            "OPCUA_CERTIFICATE_CONFIGURATION_REQUIRED",
+            "OPC-UA is disabled in production until certificate-based trust configuration is supplied",
+        )
+
+
+def source_payload(source: DataSource, now: datetime | None = None) -> dict[str, Any]:
     current = now or datetime.now(UTC)
     freshness = (
         max(0.0, (as_utc(current) - as_utc(source.last_success_at)).total_seconds())
@@ -117,16 +132,50 @@ def _source_payload(source: DataSource, now: datetime | None = None) -> dict[str
     }
 
 
-@router.get("")
-def list_sources(context: TenantDependency, session: SessionDependency) -> dict[str, Any]:
+QUALITY_WINDOW = timedelta(minutes=15)
+
+
+def recent_quality_by_source(
+    session: Session, organization_id: UUID, source_ids: list[UUID], now: datetime | None = None
+) -> dict[UUID, dict[str, int]]:
+    """Quality-status counts of each source's readings in the last 15 minutes."""
+    if not source_ids:
+        return {}
+    cutoff = as_utc(now or datetime.now(UTC)) - QUALITY_WINDOW
+    rows = session.execute(
+        select(SensorReading.data_source_id, SensorReading.quality_status, func.count())
+        .where(
+            SensorReading.organization_id == organization_id,
+            SensorReading.data_source_id.in_(source_ids),
+            SensorReading.timestamp >= cutoff,
+        )
+        .group_by(SensorReading.data_source_id, SensorReading.quality_status)
+    ).all()
+    result: dict[UUID, dict[str, int]] = {}
+    for source_id, status, count in rows:
+        if source_id is not None:
+            result.setdefault(source_id, {})[status.value] = int(count)
+    return result
+
+
+def list_source_payloads(session: Session, organization_id: UUID) -> list[dict[str, Any]]:
     sources = list(
         session.scalars(
             select(DataSource)
-            .where(DataSource.organization_id == context.organization_id)
+            .where(DataSource.organization_id == organization_id)
             .order_by(desc(DataSource.updated_at))
         )
     )
-    return {"items": [_source_payload(source) for source in sources]}
+    quality = recent_quality_by_source(session, organization_id, [source.id for source in sources])
+    return [
+        {**source_payload(source), "recent_quality": quality.get(source.id, {})}
+        for source in sources
+    ]
+
+
+@router.get("")
+def list_sources(context: TenantDependency, session: SessionDependency) -> dict[str, Any]:
+    return {"items": list_source_payloads(session, context.organization_id)}
 
 
 @router.post("", status_code=201)
@@ -136,18 +185,7 @@ def create_source(
     session: SessionDependency,
     request: Request,
 ) -> dict[str, Any]:
-    settings = get_settings()
-    if (
-        settings.is_production
-        and payload.source_type == "MQTT"
-        and not payload.endpoint.startswith("mqtts://")
-    ):
-        _raise("MQTT_TLS_REQUIRED", "Production MQTT sources must use mqtts://")
-    if settings.is_production and payload.source_type == "OPCUA":
-        _raise(
-            "OPCUA_CERTIFICATE_CONFIGURATION_REQUIRED",
-            "OPC-UA is disabled in production until certificate-based trust configuration is supplied",
-        )
+    enforce_endpoint_policy(payload.source_type, payload.endpoint)
     plant = session.scalar(
         select(Plant).where(
             and_(
@@ -237,7 +275,7 @@ def create_source(
         },
     )
     session.commit()
-    return _source_payload(source)
+    return source_payload(source)
 
 
 @router.get("/{source_id}")
@@ -255,7 +293,7 @@ def get_source(
     if source is None:
         _raise("DATA_SOURCE_NOT_FOUND", "Data source was not found", 404)
     assert source is not None
-    return _source_payload(source)
+    return source_payload(source)
 
 
 @router.get("/{source_id}/readings")
@@ -296,7 +334,7 @@ def source_readings(
         )
     )
     return {
-        "source": _source_payload(source),
+        "source": source_payload(source),
         "items": [
             {
                 "sensor_id": str(row.sensor_id),

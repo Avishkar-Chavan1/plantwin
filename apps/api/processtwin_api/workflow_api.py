@@ -12,6 +12,8 @@ from .audit import append_audit
 from .auth import SessionDependency, TenantContext, require_roles, tenant_context
 from .models import (
     Equipment,
+    ModelVersion,
+    OptimizationRun,
     PotentialAnomaly,
     Recommendation,
     RecommendationReview,
@@ -29,7 +31,7 @@ EngineerDependency = Annotated[
 
 class RecommendationReviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    decision: Literal["REVIEWED", "ACCEPTED", "REJECTED"]
+    decision: Literal["REVIEWED", "ACCEPTED", "REJECTED", "EXPIRED"]
     comment: str = Field(min_length=5, max_length=2000)
 
 
@@ -37,12 +39,38 @@ def _raise(code: str, message: str, status: int = 422) -> None:
     raise HTTPException(status, detail={"code": code, "message": message})
 
 
-def _recommendation_payload(item: Recommendation, now: datetime) -> dict[str, Any]:
+ADVISORY_LABEL = (
+    "Advisory recommendation - requires engineer review. ProcessTwin does not send commands to "
+    "PLC, DCS, SCADA or plant equipment."
+)
+FINAL_STATES = {"ACCEPTED", "REJECTED", "EXPIRED"}
+
+
+def _reason(item: Recommendation, run: OptimizationRun | None, model: ModelVersion | None) -> str:
+    gain = (item.expected_impact or {}).get("yield_percentage_points")
+    algorithm = run.algorithm if run is not None else "model scenario analysis"
+    model_text = f"{model.name} v{model.version}" if model is not None else "an unregistered model"
+    if isinstance(gain, (int, float)):
+        return (
+            f"{algorithm} within the operating envelope of {model_text} predicts a yield change of "
+            f"{gain:+.2f} percentage points at the proposed operating point."
+        )
+    return f"Derived from {algorithm} using {model_text}; the expected effect was not quantified."
+
+
+def _recommendation_payload(
+    item: Recommendation,
+    now: datetime,
+    *,
+    run: OptimizationRun | None = None,
+    model: ModelVersion | None = None,
+) -> dict[str, Any]:
     current_time = as_utc(now)
     expires_at = as_utc(item.expires_at) if item.expires_at else None
     state = item.status
-    if expires_at and expires_at <= current_time and state == "GENERATED":
+    if expires_at and expires_at <= current_time and state not in FINAL_STATES:
         state = "EXPIRED"
+    uncertainty = item.uncertainty or {}
     return {
         "id": str(item.id),
         "timestamp": item.created_at,
@@ -54,14 +82,80 @@ def _recommendation_payload(item: Recommendation, now: datetime) -> dict[str, An
         "proposed_change": item.proposed_change,
         "expected_benefit": item.expected_impact,
         "energy_impact": item.energy_impact,
-        "uncertainty": item.uncertainty,
+        "uncertainty": uncertainty,
+        "uncertainty_quantified": uncertainty.get("status") != "UNAVAILABLE" and bool(uncertainty),
         "constraint_status": item.constraint_status,
+        "operating_constraints": {
+            "bounds": run.bounds if run is not None else {},
+            "constraints": run.constraints if run is not None else {},
+        },
         "confidence": item.confidence,
+        "reason": _reason(item, run, model),
         "text": item.text,
         "status": state,
         "expires_at": expires_at,
-        "advisory": "Recommendation is advisory only. No ProcessTwin connector can send plant-control commands.",
+        "source": {
+            "kind": "MODEL_SCENARIO",
+            "basis": (item.baseline or {}).get("basis", "USER_SUPPLIED_SCENARIO"),
+            "algorithm": run.algorithm if run is not None else None,
+            "model": None
+            if model is None
+            else {"id": str(model.id), "name": model.name, "version": model.version},
+        },
+        "validation": {
+            "model_status": model.status if model is not None else "UNVALIDATED",
+            # Registry status reflects internal evaluation only; real-plant validation is never
+            # asserted unless separate evidence is recorded, which this platform does not do.
+            "real_plant_validation": "NOT_ESTABLISHED",
+        },
+        "requires_engineer_review": True,
+        "allowed_decisions": []
+        if state in FINAL_STATES
+        else (["REVIEWED", "ACCEPTED", "REJECTED", "EXPIRED"] if state == "GENERATED" else ["ACCEPTED", "REJECTED", "EXPIRED"]),
+        "advisory": ADVISORY_LABEL,
     }
+
+
+def _enriched_payloads(
+    session: Any, organization_id: UUID, items: list[Recommendation], now: datetime
+) -> list[dict[str, Any]]:
+    run_ids = {item.optimization_run_id for item in items if item.optimization_run_id}
+    model_ids = {item.model_version_id for item in items if item.model_version_id}
+    runs = (
+        {
+            run.id: run
+            for run in session.scalars(
+                select(OptimizationRun).where(
+                    OptimizationRun.organization_id == organization_id,
+                    OptimizationRun.id.in_(run_ids),
+                )
+            )
+        }
+        if run_ids
+        else {}
+    )
+    models = (
+        {
+            model.id: model
+            for model in session.scalars(
+                select(ModelVersion).where(
+                    ModelVersion.organization_id == organization_id,
+                    ModelVersion.id.in_(model_ids),
+                )
+            )
+        }
+        if model_ids
+        else {}
+    )
+    return [
+        _recommendation_payload(
+            item,
+            now,
+            run=runs.get(item.optimization_run_id) if item.optimization_run_id else None,
+            model=models.get(item.model_version_id) if item.model_version_id else None,
+        )
+        for item in items
+    ]
 
 
 @router.get("/api/v1/digital-twins/{equipment_id}/latest")
@@ -183,7 +277,7 @@ def list_advisory_recommendations(
             .limit(min(max(limit, 1), 500))
         )
     )
-    return {"items": [_recommendation_payload(item, datetime.now(UTC)) for item in rows]}
+    return {"items": _enriched_payloads(session, context.organization_id, rows, datetime.now(UTC))}
 
 
 @router.post("/api/v1/recommendations/{recommendation_id}/review")
@@ -206,7 +300,7 @@ def review_recommendation(
         _raise("RECOMMENDATION_NOT_FOUND", "Recommendation was not found", 404)
     assert item is not None
     now = datetime.now(UTC)
-    if item.status in {"ACCEPTED", "REJECTED", "EXPIRED"} or (
+    if item.status in FINAL_STATES or (
         item.expires_at and as_utc(item.expires_at) <= now
     ):
         _raise("RECOMMENDATION_NOT_REVIEWABLE", "Recommendation is final or expired", 409)
@@ -216,7 +310,7 @@ def review_recommendation(
             "Only generated recommendations may be marked reviewed",
             409,
         )
-    if payload.decision in {"ACCEPTED", "REJECTED"} and item.status not in {
+    if payload.decision in {"ACCEPTED", "REJECTED", "EXPIRED"} and item.status not in {
         "GENERATED",
         "REVIEWED",
     }:
@@ -245,7 +339,7 @@ def review_recommendation(
     )
     session.commit()
     return {
-        "recommendation": _recommendation_payload(item, now),
+        "recommendation": _enriched_payloads(session, context.organization_id, [item], now)[0],
         "review": {
             "id": str(review.id),
             "user_id": str(context.user.id),

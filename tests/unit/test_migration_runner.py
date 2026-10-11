@@ -28,7 +28,9 @@ def test_sqlite_migration_uses_alembic_without_postgresql_lock(monkeypatch: Any)
     monkeypatch.setattr(
         migration_runner,
         "create_engine",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not create a lock engine")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("must not create a lock engine")
+        ),
     )
 
     migration_runner.run_migrations()

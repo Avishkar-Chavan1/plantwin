@@ -224,6 +224,7 @@ class SensorReading(Base):
     __table_args__ = (
         Index("ix_readings_org_timestamp", "organization_id", "timestamp"),
         Index("ix_readings_sensor_timestamp", "sensor_id", "timestamp"),
+        Index("ix_readings_source_timestamp", "data_source_id", "timestamp"),
         UniqueConstraint("sensor_id", "timestamp", name="uq_sensor_timestamp"),
     )
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -279,8 +280,9 @@ class DataSource(Timestamped, Base):
 class ConnectorTag(Timestamped, Base):
     __tablename__ = "connector_tags"
     __table_args__ = (
-        UniqueConstraint("organization_id", "plant_tag", name="uq_connector_tag_plant_tag"),
+        UniqueConstraint("organization_id", "tag", name="uq_connector_tag_org_tag"),
         Index("ix_connector_tags_organization_id", "organization_id"),
+        Index("ix_connector_tags_org_plant", "organization_id", "plant_id"),
     )
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     organization_id: Mapped[UUID] = mapped_column(
@@ -303,6 +305,7 @@ class ConnectorTagMapping(Timestamped, Base):
     __table_args__ = (
         UniqueConstraint("data_source_id", "connector_tag_id", name="uq_connector_tag_mapping"),
         Index("ix_connector_tag_mappings_organization_id", "organization_id"),
+        Index("ix_connector_tag_mappings_sensor", "sensor_id"),
     )
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     organization_id: Mapped[UUID] = mapped_column(
@@ -722,7 +725,10 @@ class OptimizationRun(Timestamped, Base):
 
 class Recommendation(Timestamped, Base):
     __tablename__ = "recommendations"
-    __table_args__ = (Index("ix_recommendations_organization_id", "organization_id"),)
+    __table_args__ = (
+        Index("ix_recommendations_organization_id", "organization_id"),
+        Index("ix_recommendations_org_status_created", "organization_id", "status", "created_at"),
+    )
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     organization_id: Mapped[UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
@@ -795,7 +801,10 @@ class PotentialAnomaly(Base):
 
 class Alert(Timestamped, Base):
     __tablename__ = "alerts"
-    __table_args__ = (Index("ix_alerts_organization_id", "organization_id"),)
+    __table_args__ = (
+        Index("ix_alerts_organization_id", "organization_id"),
+        Index("ix_alerts_org_status_occurred", "organization_id", "status", "occurred_at"),
+    )
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     organization_id: Mapped[UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False

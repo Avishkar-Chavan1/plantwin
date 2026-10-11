@@ -149,7 +149,8 @@ class MqttReadOnlySubscriber:
                         self._client = None
                         raise RuntimeError("MQTT connection retries exhausted") from exc
                     delay = min(30.0, base_backoff_s * (2**attempt))
-                    time.sleep(delay + random.uniform(0, delay * 0.2))
+                    # Retry jitter only; not security-sensitive, so S311 does not apply here.
+                    time.sleep(delay + random.uniform(0, delay * 0.2))  # noqa: S311
         except ImportError as exc:
             raise RuntimeError("MQTT support requires the optional mqtt extra") from exc
 

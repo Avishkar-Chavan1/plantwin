@@ -1,12 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Badge, formatNumber } from "@/components/status";
+import { messageOf, readErrorMessage } from "@/components/api-client";
+import { useApiResource } from "@/components/use-api-resource";
 import { useWorkspaceData } from "@/components/workspace-data";
 
-const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const SIMULATION_TIMEOUT_MS = 90_000;
 
 type Simulation = {
+  id: string;
   baseline: Record<string, number>;
   scenario: Record<string, number>;
   difference: Record<string, number>;
@@ -25,38 +29,19 @@ const SCENARIO_LIMITS = {
   flow_m3_h: { min: 0.01, max: 10000 },
 } as const;
 
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function number(value: number | undefined, digits = 2) {
-  return value === undefined || Number.isNaN(value) ? "—" : value.toFixed(digits);
-}
-
 export default function Simulations() {
-  const { summary, headers, isLoading } = useWorkspaceData();
+  const { summary, apiFetch, isLoading } = useWorkspaceData();
   const equipment = (summary as { equipment?: { id: string; tag: string } } | null)?.equipment;
   const [scenario, setScenario] = useState({ temperature_c: 185, pressure_bar: 10, flow_m3_h: 72 });
   const [durationS, setDurationS] = useState(3600);
   const [modelId, setModelId] = useState("");
-  const [models, setModels] = useState<ModelOption[]>([]);
   const [simulation, setSimulation] = useState<Simulation | null>(null);
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
+  const [completedAt, setCompletedAt] = useState<Date | null>(null);
   const [error, setError] = useState("");
-
-  useEffect(() => {
-    if (!headers) return;
-    const controller = new AbortController();
-    void fetch(`${apiUrl}/api/v1/models`, { headers, signal: controller.signal })
-      .then(async (response) => {
-        if (!response.ok) return;
-        const items = ((await response.json()) as { items?: ModelOption[] }).items ?? [];
-        setModels(items.filter((item) => ["VALIDATED", "PRODUCTION"].includes(item.status)));
-      })
-      .catch(() => { /* model list is optional for simulations */ });
-    return () => controller.abort();
-  }, [headers]);
+  // The model list is optional: without it the unvalidated reference model is still usable.
+  const registry = useApiResource<{ items: ModelOption[] }>("/api/v1/models");
+  const models = (registry.data?.items ?? []).filter((item) => ["VALIDATED", "PRODUCTION"].includes(item.status));
 
   const update = useCallback((key: keyof typeof SCENARIO_LIMITS, raw: string) => {
     // Keep the text field responsive while typing; invalid text becomes NaN and
@@ -65,7 +50,7 @@ export default function Simulations() {
   }, []);
 
   const runSimulation = useCallback(async () => {
-    if (!equipment || !headers) { setError("No equipment is available for simulation."); return; }
+    if (!equipment) { setError("No equipment is available for simulation."); return; }
     const values = [scenario.temperature_c, scenario.pressure_bar, scenario.flow_m3_h];
     if (!values.every(Number.isFinite)) { setError("Enter finite numeric operating conditions."); return; }
     const [temperature, pressure, flow] = values;
@@ -82,35 +67,29 @@ export default function Simulations() {
     if (!Number.isFinite(durationS) || durationS <= 0 || durationS > 86400) { setError("Duration must be between 1 and 86400 seconds."); return; }
     setBusy(true);
     setError("");
-    setMessage("Running the CSTR physics model…");
     try {
-      const response = await fetch(`${apiUrl}/api/v1/simulations`, {
+      const response = await apiFetch("/api/v1/simulations", {
         method: "POST",
-        headers,
-        body: JSON.stringify({
+        timeoutMs: SIMULATION_TIMEOUT_MS,
+        json: {
           equipment_id: equipment.id,
           temperature_c: temperature,
           pressure_bar: pressure,
           flow_m3_h: flow,
           duration_s: durationS,
           ...(modelId ? { model_version_id: modelId } : {}),
-        }),
+        },
       });
-      const data = await response.json();
-      if (!response.ok) {
-        setError(data.error?.message ?? data.detail?.message ?? `Simulation failed (HTTP ${response.status}).`);
-        setMessage("");
-        return;
-      }
-      setSimulation(data as Simulation);
-      setMessage("Simulation completed. This response is advisory only; no plant setting was changed.");
+      if (!response.ok) throw new Error(await readErrorMessage(response, "The simulation was rejected."));
+      // Replacing the whole result (new id) is what redraws the chart; nothing is animated client-side.
+      setSimulation((await response.json()) as Simulation);
+      setCompletedAt(new Date());
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Network error during simulation.");
-      setMessage("");
+      setError(messageOf(caught, "Network error during simulation."));
     } finally {
       setBusy(false);
     }
-  }, [durationS, equipment, headers, modelId, scenario]);
+  }, [apiFetch, durationS, equipment, modelId, scenario]);
 
   if (isLoading) return <div className="console-loading">Loading simulation inputs…</div>;
   if (!equipment) {
@@ -125,9 +104,9 @@ export default function Simulations() {
   return (
     <div className="simulations-view">
       <p className="notice">
-        What-if scenarios call the tenant's CSTR model and persist the request/result for auditability. They do not connect to or command a plant.
+        What-if scenarios call the organization&apos;s CSTR model and persist the request/result for auditability. They do not connect to or command a plant.
       </p>
-      <p className="message" role="status">{message}</p>
+      <p className="message" role="status" aria-live="polite">{busy ? "Running the CSTR physics model…" : simulation && completedAt ? `Simulation ${simulation.id.slice(0, 8)} completed at ${completedAt.toLocaleTimeString()}. Advisory only; no plant setting was changed.` : ""}</p>
       {error && <div className="error-state" role="alert"><strong>Simulation rejected.</strong> {error}</div>}
       <section className="grid">
         <article className="panel scenario">
@@ -185,20 +164,20 @@ export default function Simulations() {
           </button>
         </article>
         <article className="panel">
-          <p className="eyebrow">MODEL RESPONSE</p>
+          <p className="eyebrow">MODEL RESPONSE · <Badge tone="sim">SIMULATION</Badge></p>
           <h2>{simulation ? "Scenario metrics" : "Awaiting a run"}</h2>
           {simulation ? (
             <>
               <div className="metrics compact-metrics">
-                <Metric label="Yield" value={number(simulation.scenario.yield_pct)} unit="%" />
-                <Metric label="Conversion" value={number(simulation.scenario.conversion_pct)} unit="%" />
-                <Metric label="Energy proxy" value={number(simulation.scenario.energy_proxy_kw)} unit="kW" />
+                <Metric label="Yield" value={formatNumber(simulation.scenario.yield_pct)} unit="%" />
+                <Metric label="Conversion" value={formatNumber(simulation.scenario.conversion_pct)} unit="%" />
+                <Metric label="Energy proxy" value={formatNumber(simulation.scenario.energy_proxy_kw)} unit="kW" />
               </div>
               <p className="muted">
-                Δ yield {simulation.difference.yield_percentage_points >= 0 ? "+" : ""}{number(simulation.difference.yield_percentage_points)} pp ·
-                Δ energy {number(simulation.difference.energy_kw)} kW
+                Δ yield {simulation.difference.yield_percentage_points >= 0 ? "+" : ""}{formatNumber(simulation.difference.yield_percentage_points)} pp ·
+                Δ energy {formatNumber(simulation.difference.energy_kw)} kW
               </p>
-              <span className={`pill ${simulation.model_validity === "VALIDATED_MODEL_RANGE" ? "good" : ""}`}>{simulation.model_validity}</span>
+              <Badge tone={simulation.model_validity === "VALIDATED_MODEL_RANGE" ? "live" : "warn"}>{simulation.model_validity.replaceAll("_", " ")}</Badge>
               {simulation.constraint_violations.map((item) => <p className="warning" key={item}>{item}</p>)}
             </>
           ) : (
@@ -217,13 +196,13 @@ export default function Simulations() {
           </div>
           <div className="plot">
             <ResponsiveContainer width="100%" height={320}>
-              <LineChart data={simulation.trajectory}>
+              <LineChart key={simulation.id} data={simulation.trajectory}>
                 <XAxis dataKey="time_s" tick={{ fill: "#86a0ae", fontSize: 11 }} tickFormatter={(value) => `${Number(value).toFixed(0)}s`} />
                 <YAxis yAxisId="left" tick={{ fill: "#86a0ae", fontSize: 11 }} />
                 <YAxis yAxisId="right" orientation="right" tick={{ fill: "#86a0ae", fontSize: 11 }} />
                 <Tooltip labelFormatter={(label) => `t = ${label}s`} />
-                <Line yAxisId="left" type="monotone" dataKey="temperature_c" stroke="#60d5c6" dot={false} name="Temperature °C" />
-                <Line yAxisId="right" type="monotone" dataKey="yield_pct" stroke="#f2b36d" dot={false} name="Yield %" />
+                <Line yAxisId="left" type="monotone" dataKey="temperature_c" stroke="#60d5c6" dot={false} name="Temperature °C (simulated)" isAnimationActive={false} />
+                <Line yAxisId="right" type="monotone" dataKey="yield_pct" stroke="#f2b36d" dot={false} name="Yield % (simulated)" isAnimationActive={false} />
               </LineChart>
             </ResponsiveContainer>
           </div>

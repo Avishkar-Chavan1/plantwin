@@ -1,10 +1,18 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { API_URL } from "./api-client";
 
-const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const STORAGE_KEY = "processtwin-auth";
+/**
+ * Non-secret marker read by middleware to decide whether to send an unauthenticated visitor to
+ * /login. It carries no token. Tokens live only in localStorage and are sent as Authorization
+ * headers by the browser; the API remains the sole authorization authority.
+ */
+const SESSION_MARKER = "processtwin-session";
+const LEGACY_COOKIES = ["processtwin-token", "processtwin-refresh-token", "processtwin-org"];
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
+const AUTH_REQUEST_TIMEOUT_MS = 15_000;
 
 type StoredAuth = { token: string; refreshToken: string; organization: string };
 
@@ -14,29 +22,22 @@ interface AuthState {
   isLoading: boolean;
   login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => Promise<void>;
-  /** Rotate the refresh token; resolves with the new access token or null when the session ended. */
+  /** Rotate the refresh token; resolves with the new access token or null when it could not be renewed. */
   refreshSession: () => Promise<string | null>;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
-
-function cookieValue(name: string): string | null {
-  if (typeof document === "undefined") return null;
-  const entry = document.cookie.split("; ").find((item) => item.startsWith(`${name}=`));
-  return entry ? decodeURIComponent(entry.slice(name.length + 1)) : null;
-}
 
 function cookieAttributes(maxAgeSeconds: number): string {
   const secure = typeof window !== "undefined" && window.location.protocol === "https:" ? "; Secure" : "";
   return `path=/; max-age=${maxAgeSeconds}; SameSite=Lax${secure}`;
 }
 
-function writeCookie(name: string, value: string, maxAgeSeconds: number) {
-  if (typeof document !== "undefined") document.cookie = `${name}=${encodeURIComponent(value)}; ${cookieAttributes(maxAgeSeconds)}`;
-}
-
-function clearCookie(name: string) {
-  if (typeof document !== "undefined") document.cookie = `${name}=; ${cookieAttributes(0)}`;
+function setMarker(active: boolean) {
+  if (typeof document === "undefined") return;
+  document.cookie = `${SESSION_MARKER}=${active ? "1" : ""}; ${cookieAttributes(active ? SESSION_MAX_AGE_SECONDS : 0)}`;
+  // Tokens used to be mirrored into cookies; make sure no stale copy survives an upgrade.
+  for (const name of LEGACY_COOKIES) document.cookie = `${name}=; ${cookieAttributes(0)}`;
 }
 
 function readStoredAuth(): StoredAuth | null {
@@ -47,46 +48,44 @@ function readStoredAuth(): StoredAuth | null {
       return { token: parsed.token, refreshToken: parsed.refreshToken, organization: parsed.organization };
     }
   } catch {
-    // A malformed client cache should not prevent a fresh sign-in.
+    // A malformed client cache must not prevent a fresh sign-in.
   }
-  const token = cookieValue("processtwin-token");
-  const refreshToken = cookieValue("processtwin-refresh-token");
-  const organization = cookieValue("processtwin-org");
-  return token && refreshToken && organization ? { token, refreshToken, organization } : null;
+  return null;
 }
 
 function persistAuth(auth: StoredAuth | null) {
   if (typeof window === "undefined") return;
-  if (!auth) {
-    localStorage.removeItem(STORAGE_KEY);
-    clearCookie("processtwin-token");
-    clearCookie("processtwin-refresh-token");
-    clearCookie("processtwin-org");
-    return;
-  }
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(auth));
-  // Middleware only uses these as a navigation gate. The API remains the authorization authority.
-  writeCookie("processtwin-token", auth.token, SESSION_MAX_AGE_SECONDS);
-  writeCookie("processtwin-refresh-token", auth.refreshToken, SESSION_MAX_AGE_SECONDS);
-  writeCookie("processtwin-org", auth.organization, SESSION_MAX_AGE_SECONDS);
+  if (!auth) localStorage.removeItem(STORAGE_KEY);
+  else localStorage.setItem(STORAGE_KEY, JSON.stringify(auth));
+  setMarker(auth !== null);
 }
 
-function errorMessage(body: unknown, fallback: string) {
-  if (body && typeof body === "object") {
-    const response = body as { detail?: { message?: string }; error?: { message?: string } };
-    if (response.detail?.message) return response.detail.message;
-    if (response.error?.message) return response.error.message;
+async function errorMessage(response: Response, fallback: string): Promise<string> {
+  try {
+    const body = (await response.json()) as { error?: { message?: string }; detail?: string | { message?: string } };
+    if (body.error?.message) return body.error.message;
+    if (typeof body.detail === "string") return body.detail;
+    if (body.detail?.message) return body.detail.message;
+  } catch {
+    // fall through
   }
+  if (response.status === 429) return "Too many sign-in attempts. Wait a minute and try again.";
+  if (response.status >= 500) return "The ProcessTwin API is unavailable. Try again shortly.";
   return fallback;
 }
 
+function timeoutSignal(ms: number): AbortSignal {
+  return AbortSignal.timeout(ms);
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  // Start in the same state on server and client. This prevents an authenticated
-  // client render from hydrating over the server's unauthenticated shell.
+  // Start in the same state on server and client so an authenticated client render never
+  // hydrates over the server's unauthenticated shell.
   const [token, setToken] = useState<string | null>(null);
   const [organization, setOrganization] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const refreshInFlight = useRef<Promise<string | null> | null>(null);
 
   const applyAuth = useCallback((auth: StoredAuth | null) => {
     setToken(auth?.token ?? null);
@@ -95,22 +94,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     persistAuth(auth);
   }, []);
 
-  const refreshSession = useCallback(async (): Promise<string | null> => {
-    const stored = readStoredAuth();
-    if (!stored?.refreshToken) return null;
-    try {
-      const response = await fetch(`${apiUrl}/api/v1/auth/refresh`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refresh_token: stored.refreshToken }),
-      });
-      const body = await response.json();
-      if (!response.ok || !body.access_token || !body.refresh_token) return null;
-      applyAuth({ token: body.access_token, refreshToken: body.refresh_token, organization: stored.organization });
-      return body.access_token as string;
-    } catch {
-      return null;
-    }
+  const refreshSession = useCallback((): Promise<string | null> => {
+    // Refresh tokens rotate and are single-use. Concurrent callers must share one request or the
+    // loser presents an already-revoked token and the user is signed out.
+    if (refreshInFlight.current) return refreshInFlight.current;
+    const run = (async (): Promise<string | null> => {
+      const stored = readStoredAuth();
+      if (!stored?.refreshToken) return null;
+      try {
+        const response = await fetch(`${API_URL}/api/v1/auth/refresh`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refresh_token: stored.refreshToken }),
+          signal: timeoutSignal(AUTH_REQUEST_TIMEOUT_MS),
+        });
+        if (response.status === 401 || response.status === 403) {
+          applyAuth(null); // the refresh token is revoked or expired: the session is over
+          return null;
+        }
+        const body = await response.json();
+        if (!response.ok || !body.access_token || !body.refresh_token) return null;
+        applyAuth({ token: body.access_token, refreshToken: body.refresh_token, organization: stored.organization });
+        return body.access_token as string;
+      } catch {
+        return null; // transient network failure: keep the session, try again later
+      }
+    })().finally(() => { refreshInFlight.current = null; });
+    refreshInFlight.current = run;
+    return run;
   }, [applyAuth]);
 
   useEffect(() => {
@@ -118,18 +129,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     async function restore() {
       const stored = readStoredAuth();
       if (!stored) {
+        setMarker(false);
         if (active) setIsLoading(false);
         return;
       }
       try {
-        const response = await fetch(`${apiUrl}/api/v1/auth/me`, {
+        const response = await fetch(`${API_URL}/api/v1/auth/me`, {
           headers: { Authorization: `Bearer ${stored.token}`, "X-Organization-ID": stored.organization },
+          signal: timeoutSignal(AUTH_REQUEST_TIMEOUT_MS),
         });
         if (response.ok) {
           if (active) applyAuth(stored);
         } else {
           const refreshed = await refreshSession();
-          if (!refreshed && active) applyAuth(null);
+          if (!refreshed && active && response.status === 401) applyAuth(null);
+          else if (!refreshed && active) applyAuth(stored);
         }
       } catch {
         // Retain a previously valid session during a transient network outage.
@@ -142,6 +156,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => { active = false; };
   }, [applyAuth, refreshSession]);
 
+  // Keep tabs in step: signing out (or in) in one tab must be reflected in the others.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== STORAGE_KEY) return;
+      const next = readStoredAuth();
+      setToken(next?.token ?? null);
+      setRefreshToken(next?.refreshToken ?? null);
+      setOrganization(next?.organization ?? null);
+      setMarker(next !== null);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
   useEffect(() => {
     if (!refreshToken) return;
     const timer = window.setInterval(() => { void refreshSession(); }, 20 * 60 * 1000);
@@ -150,21 +178,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = useCallback(async (email: string, password: string) => {
     try {
-      const response = await fetch(`${apiUrl}/api/v1/auth/login`, {
+      const response = await fetch(`${API_URL}/api/v1/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
+        signal: timeoutSignal(AUTH_REQUEST_TIMEOUT_MS),
       });
+      if (!response.ok) return { success: false, error: await errorMessage(response, "Sign-in failed. Check your credentials.") };
       const body = await response.json();
       const selectedOrganization = body.organizations?.[0]?.id as string | undefined;
-      if (!response.ok || !body.access_token || !body.refresh_token || !selectedOrganization) {
-        return { success: false, error: errorMessage(body, "Sign-in failed. Check your credentials.") };
+      if (!body.access_token || !body.refresh_token || !selectedOrganization) {
+        return { success: false, error: "Your account has no organization access. Contact your administrator." };
       }
       applyAuth({ token: body.access_token, refreshToken: body.refresh_token, organization: selectedOrganization });
       setIsLoading(false);
       return { success: true };
-    } catch {
-      return { success: false, error: "Network error. Please try again." };
+    } catch (caught) {
+      const timedOut = caught instanceof DOMException && caught.name === "TimeoutError";
+      return {
+        success: false,
+        error: timedOut
+          ? "The sign-in request timed out. The API may be starting up; try again."
+          : "Cannot reach the ProcessTwin API. Check your connection or the deployment's API URL.",
+      };
     }
   }, [applyAuth]);
 
@@ -172,12 +208,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const stored = readStoredAuth();
     try {
       if (stored?.refreshToken) {
-        await fetch(`${apiUrl}/api/v1/auth/logout`, {
+        await fetch(`${API_URL}/api/v1/auth/logout`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ refresh_token: stored.refreshToken }),
+          signal: timeoutSignal(AUTH_REQUEST_TIMEOUT_MS),
         });
       }
+    } catch {
+      // Revocation is best effort; the local session is always cleared.
     } finally {
       applyAuth(null);
     }

@@ -156,7 +156,8 @@ class TEPSurrogate:
         tolerance = np.maximum(span * self.envelope_margin_fraction, self.feature_scale * 0.1)
         lower = self.training_feature_minimum - tolerance
         upper = self.training_feature_maximum + tolerance
-        return np.any((matrix < lower) | (matrix > upper), axis=1)
+        outside: NDArray[np.bool_] = np.any((matrix < lower) | (matrix > upper), axis=1)
+        return outside
 
 
 @dataclass(frozen=True)

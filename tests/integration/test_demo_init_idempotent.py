@@ -38,7 +38,9 @@ def test_seed_demo_idempotent(tmp_path) -> None:
     seed(1.0)
 
     with SessionLocal() as session:
-        orgs = session.scalars(select(Organization).where(Organization.name == "ProcessTwin Demonstration")).all()
+        orgs = session.scalars(
+            select(Organization).where(Organization.name == "ProcessTwin Demonstration")
+        ).all()
         assert len(orgs) == 1
         first_org_id = orgs[0].id
 
@@ -46,7 +48,9 @@ def test_seed_demo_idempotent(tmp_path) -> None:
     seed(1.0)
 
     with SessionLocal() as session:
-        orgs = session.scalars(select(Organization).where(Organization.name == "ProcessTwin Demonstration")).all()
+        orgs = session.scalars(
+            select(Organization).where(Organization.name == "ProcessTwin Demonstration")
+        ).all()
         assert len(orgs) == 1
         assert orgs[0].id == first_org_id
 
@@ -59,7 +63,9 @@ def test_train_idempotent(tmp_path) -> None:
     seed(1.0)
 
     with SessionLocal() as session:
-        org = session.scalar(select(Organization).where(Organization.name == "ProcessTwin Demonstration"))
+        org = session.scalar(
+            select(Organization).where(Organization.name == "ProcessTwin Demonstration")
+        )
         assert org is not None
 
     # First training run

@@ -1,6 +1,8 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import { messageOf, readErrorMessage } from "./api-client";
+import { useWorkspaceData } from "./workspace-data";
 
 type ModelVersion = {
   id: string;
@@ -43,9 +45,6 @@ type Calibration = {
   created_at: string;
 };
 
-type RoleInfo = { role: string };
-
-const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 function numericEntries(metrics: Record<string, unknown>): Array<[string, number]> {
   const flat: Array<[string, number]> = [];
@@ -60,8 +59,8 @@ function numericEntries(metrics: Record<string, unknown>): Array<[string, number
   return flat;
 }
 
-export function ModelGovernance({ token, organization }: { token: string; organization: string }) {
-  const headers = { Authorization: `Bearer ${token}`, "X-Organization-ID": organization, "Content-Type": "application/json" };
+export function ModelGovernance() {
+  const { apiFetch, organization } = useWorkspaceData();
   const [models, setModels] = useState<ModelVersion[]>([]);
   const [calibrations, setCalibrations] = useState<Calibration[]>([]);
   const [role, setRole] = useState<string>("");
@@ -73,9 +72,9 @@ export function ModelGovernance({ token, organization }: { token: string; organi
 
   async function reload() {
     const [modelsResponse, calibrationsResponse, meResponse] = await Promise.all([
-      fetch(`${apiUrl}/api/v1/models`, { headers }),
-      fetch(`${apiUrl}/api/v1/calibrations`, { headers }),
-      fetch(`${apiUrl}/api/v1/auth/me`, { headers }),
+      apiFetch(`/api/v1/models`),
+      apiFetch(`/api/v1/calibrations`),
+      apiFetch(`/api/v1/auth/me`),
     ]);
     if (modelsResponse.ok) {
       const items: ModelVersion[] = (await modelsResponse.json()).items;
@@ -92,25 +91,31 @@ export function ModelGovernance({ token, organization }: { token: string; organi
   async function loadEvidence(modelId: string) {
     if (!modelId) { setEvaluations([]); setDriftEvents([]); return; }
     const [evaluationsResponse, driftResponse] = await Promise.all([
-      fetch(`${apiUrl}/api/v1/models/${modelId}/evaluations`, { headers }),
-      fetch(`${apiUrl}/api/v1/models/${modelId}/drift-events`, { headers }),
+      apiFetch(`/api/v1/models/${modelId}/evaluations`),
+      apiFetch(`/api/v1/models/${modelId}/drift-events`),
     ]);
     setEvaluations(evaluationsResponse.ok ? (await evaluationsResponse.json()).items : []);
     setDriftEvents(driftResponse.ok ? (await driftResponse.json()).items : []);
   }
 
-  useEffect(() => { void reload(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [token, organization]);
-  useEffect(() => { void loadEvidence(selectedId); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [selectedId]);
+  // Reload only when the organization changes; the loaders close over stable request helpers.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { void reload(); }, [organization]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { void loadEvidence(selectedId); }, [selectedId]);
 
   const selected = models.find((entry) => entry.id === selectedId);
   const canGovern = role === "OWNER" || role === "ADMIN";
   const actionableEvaluations = evaluations.filter((item) => item.status === "EVALUATED" && item.observation_count >= 10);
 
   async function post(path: string, body?: Record<string, unknown>): Promise<string> {
-    const response = await fetch(`${apiUrl}${path}`, { method: "POST", headers, body: body ? JSON.stringify(body) : undefined });
-    const data = await response.json();
-    if (!response.ok) return data.detail?.message ?? data.error?.message ?? `Request failed (${response.status})`;
-    return "";
+    try {
+      const response = await apiFetch(path, { method: "POST", json: body });
+      if (!response.ok) return await readErrorMessage(response, "Request failed.");
+      return "";
+    } catch (caught) {
+      return messageOf(caught, "Request failed.");
+    }
   }
 
   async function submitValidation(event: FormEvent<HTMLFormElement>) {

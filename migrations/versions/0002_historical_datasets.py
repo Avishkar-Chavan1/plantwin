@@ -10,7 +10,6 @@ from alembic import op
 from apps.api.processtwin_api.database import Base
 from sqlalchemy import JSON, Column, Float, String, inspect
 
-
 revision = "0002_historical_datasets"
 down_revision = "0001_initial_schema"
 branch_labels = None

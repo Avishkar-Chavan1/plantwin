@@ -62,6 +62,16 @@ UNIT_ALIASES = {
     "kj/kg-k": "kJ/kg-K",
     "kJ/kg-K": "kJ/kg-K",
     "kj/kg/k": "kJ/kg-K",
+    "psi": "psi",
+    "degF": "degF",
+    "°F": "degF",
+    "m": "m",
+    "mm": "mm",
+    "L": "L",
+    "l": "L",
+    "m3": "m3",
+    "m^3": "m3",
+    "L/s": "L/s",
     "rpm": "rpm",
     "rad/s": "rad/s",
     "%": "%",
@@ -72,7 +82,9 @@ UNIT_ALIASES = {
 UNITS: dict[str, UnitDefinition] = {
     "K": UnitDefinition("temperature", 1.0),
     "degC": UnitDefinition("temperature", 1.0, 273.15),
+    "degF": UnitDefinition("temperature", 5 / 9, 459.67 * 5 / 9),
     "Pa": UnitDefinition("pressure", 1.0),
+    "psi": UnitDefinition("pressure", 6894.757293168),
     "kPa": UnitDefinition("pressure", 1000.0),
     "bar": UnitDefinition("pressure", 100_000.0),
     "mbar": UnitDefinition("pressure", 100.0),
@@ -80,6 +92,7 @@ UNITS: dict[str, UnitDefinition] = {
     "m3/h": UnitDefinition("volumetric_flow", 1 / 3600),
     "m3/min": UnitDefinition("volumetric_flow", 1 / 60),
     "L/min": UnitDefinition("volumetric_flow", 1 / 60_000),
+    "L/s": UnitDefinition("volumetric_flow", 1 / 1000),
     "kg/s": UnitDefinition("mass_flow", 1.0),
     "kg/h": UnitDefinition("mass_flow", 1 / 3600),
     "g/s": UnitDefinition("mass_flow", 1 / 1000),
@@ -92,6 +105,10 @@ UNITS: dict[str, UnitDefinition] = {
     "J": UnitDefinition("energy", 1.0),
     "kJ": UnitDefinition("energy", 1000.0),
     "kWh": UnitDefinition("energy", 3_600_000.0),
+    "m": UnitDefinition("length", 1.0),
+    "mm": UnitDefinition("length", 0.001),
+    "m3": UnitDefinition("volume", 1.0),
+    "L": UnitDefinition("volume", 0.001),
     "J/kg-K": UnitDefinition("heat_capacity", 1.0),
     "kJ/kg-K": UnitDefinition("heat_capacity", 1000.0),
     "rpm": UnitDefinition("rotational_speed", 2 * 3.141592653589793 / 60),
@@ -99,6 +116,11 @@ UNITS: dict[str, UnitDefinition] = {
     "%": UnitDefinition("dimensionless", 0.01),
     "1": UnitDefinition("dimensionless", 1.0),
 }
+
+
+def supported_units() -> dict[str, str]:
+    """Mapping of every supported canonical unit to its physical dimension."""
+    return {name: definition.dimension for name, definition in UNITS.items()}
 
 
 def _canonical_unit(name: str) -> str:
@@ -131,6 +153,8 @@ def si_unit(unit: str) -> str:
         "mass_flow": "kg/s",
         "concentration": "mol/m3",
         "density": "kg/m3",
+        "length": "m",
+        "volume": "m3",
         "power": "W",
         "energy": "J",
         "heat_capacity": "J/kg-K",

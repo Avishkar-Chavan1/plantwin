@@ -154,6 +154,8 @@ services:
         # Next.js embeds this public origin during `pnpm run build`; a runtime
         # environment value alone cannot reconfigure already-built browser JS.
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?NEXT_PUBLIC_API_URL must be the public API origin}
+        # Optional public demo contact on the landing page. Never a secret.
+        NEXT_PUBLIC_CONTACT_EMAIL: ${NEXT_PUBLIC_CONTACT_EMAIL:-}
     image: ${REGISTRY:-processtwin}/web:${TAG:-0.1.0}
     restart: unless-stopped
     environment:

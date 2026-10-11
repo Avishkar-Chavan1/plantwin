@@ -4,8 +4,8 @@ Revision ID: 660c4eb0949d
 Revises: 0007_object_storage_chunked_imports
 Create Date: 2026-10-03 20:31:10.183123
 """
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = '660c4eb0949d'
 down_revision = '0007_object_storage_chunked_imports'
