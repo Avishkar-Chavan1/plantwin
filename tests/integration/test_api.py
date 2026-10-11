@@ -157,20 +157,22 @@ def test_production_disables_docs_but_keeps_login_route_and_configured_cors(
         headers={
             "Origin": "https://plantwin.vercel.app",
             "Access-Control-Request-Method": "POST",
-            "Access-Control-Request-Headers": "content-type",
+            "Access-Control-Request-Headers": "content-type,authorization",
         },
     )
     assert allowed.status_code == 200
     assert allowed.headers["access-control-allow-origin"] == "https://plantwin.vercel.app"
     assert "POST" in allowed.headers["access-control-allow-methods"]
-    assert "content-type" in allowed.headers["access-control-allow-headers"].lower()
+    allowed_headers = allowed.headers["access-control-allow-headers"].lower()
+    assert "content-type" in allowed_headers
+    assert "authorization" in allowed_headers
 
     rejected = client.options(
         "/api/v1/auth/login",
         headers={
             "Origin": "https://unconfigured.example.test",
             "Access-Control-Request-Method": "POST",
-            "Access-Control-Request-Headers": "content-type",
+            "Access-Control-Request-Headers": "content-type,authorization",
         },
     )
     assert rejected.status_code == 400
