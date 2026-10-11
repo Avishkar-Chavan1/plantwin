@@ -9,17 +9,31 @@ ambiguity. Do not use `poetry install` or set the service root to `apps/api`:
 the root package uses setuptools discovery for `apps*`, `packages*` and
 `connectors*`; there is no top-level `processtwin` import package.
 
+The deploy log `Running 'Dockerfile.api.prod'` means Render treated that text
+as a start command. It did not select or build a Dockerfile. The Node.js version
+message also indicates this service is currently configured for a native
+Node.js runtime (likely using `apps/web/package.json`), not the API's Docker
+runtime.
+
 Configure the Render web service as follows:
 
 | Setting | Value |
 | --- | --- |
-| Runtime | Docker |
+| Language | Docker (select this when creating the Web Service; do not select Node) |
 | Root Directory | Leave blank (repository root) |
 | Dockerfile Path | `Dockerfile.api.prod` |
-| Docker Context Directory | `.` (repository root) |
-| Build Command | Leave unset; Render builds the Dockerfile |
-| Docker Command | `sh -c 'unset DATABASE_ADMIN_URL; exec gunicorn apps.api.processtwin_api.main:app --bind 0.0.0.0:$PORT --workers 1 --worker-class uvicorn.workers.UvicornWorker --access-logfile - --error-logfile - --log-level info'` |
+| Build Command | Not used for Docker; Render builds the selected Dockerfile |
+| Start Command | Not used for Docker |
+| Docker Command | `/bin/sh -c 'unset DATABASE_ADMIN_URL; exec gunicorn apps.api.processtwin_api.main:app --bind 0.0.0.0:$PORT --workers 1 --worker-class uvicorn.workers.UvicornWorker --access-logfile - --error-logfile - --log-level info'` |
 | Health Check Path | `/ready` |
+
+In the Dashboard, set **Language** to **Docker** and enter the path above in
+**Dockerfile Path**. Do not enter the Dockerfile path in **Start Command** or
+**Docker Command**. Leave Root Directory at the repository root so the Docker
+build context includes `pyproject.toml`, `apps/`, `packages/`, `connectors/`,
+and `migrations/`. Leave the native Build and Start Command fields unused.
+The optional Docker Command above overrides the image's default four-worker,
+fixed-port command with one worker and Render's `$PORT`.
 
 Set `ENVIRONMENT=production` and inject the production `DATABASE_URL`,
 `JWT_SECRET`, `METRICS_TOKEN` and HTTPS `CORS_ORIGINS` as Render environment
