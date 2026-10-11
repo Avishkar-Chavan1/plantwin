@@ -7,6 +7,7 @@ import io
 import logging
 import os
 import re
+import traceback
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -26,6 +27,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from .advisory_gate import evaluate_recommendation_gate
 from .audit import append_audit
@@ -130,6 +132,10 @@ def create_app() -> FastAPI:
     app.include_router(workflow_router)
     app.include_router(connector_router)
     app.add_middleware(
+        BaseHTTPMiddleware,
+        dispatch=request_context,
+    )
+    app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.cors_origins_parsed),
         allow_credentials=False,
@@ -141,10 +147,6 @@ def create_app() -> FastAPI:
     return app
 
 
-app = create_app()
-
-
-@app.middleware("http")
 async def request_context(request: Request, call_next: Any) -> Response:
     runtime_settings = get_settings()
     supplied_request_id = request.headers.get("X-Request-ID", "")
@@ -154,7 +156,12 @@ async def request_context(request: Request, call_next: Any) -> Response:
     # Set request ID in context variable for logging correlation
     set_request_id(request_id)
     request.state.request_id = request_id
-    if request.method != "OPTIONS" and request.url.path not in {"/health", "/ready", "/metrics", "/live"}:
+    if request.method != "OPTIONS" and request.url.path not in {
+        "/health",
+        "/ready",
+        "/metrics",
+        "/live",
+    }:
         client = request.client.host if request.client else "unknown"
         limit = (
             runtime_settings.login_rate_limit_requests
@@ -199,10 +206,16 @@ async def request_context(request: Request, call_next: Any) -> Response:
     started = perf_counter()
     try:
         response = await call_next(request)
-    except Exception:
-        logger.exception(
+    except Exception as exc:
+        logger.error(
             "unhandled request error",
-            extra={"request_id": request_id, "path": request.url.path},
+            extra={
+                "request_id": request_id,
+                "path": request.url.path,
+                "exception_type": type(exc).__name__,
+                "exception_chain": _exception_chain_types(exc),
+                "exception_frames": _exception_frames(exc),
+            },
         )
         response = JSONResponse(
             status_code=500,
@@ -242,6 +255,40 @@ async def request_context(request: Request, call_next: Any) -> Response:
         },
     )
     return response
+
+
+def _exception_chain_types(exc: BaseException) -> list[str]:
+    chain: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(type(current).__name__)
+        current = current.__cause__ or current.__context__
+    return chain
+
+
+def _exception_frames(exc: BaseException) -> list[dict[str, str | int]]:
+    current: BaseException | None = exc
+    frames: list[dict[str, str | int]] = []
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        for frame in traceback.extract_tb(current.__traceback__):
+            if frame.lineno is not None:
+                frames.append(
+                    {
+                        "exception_type": type(current).__name__,
+                        "file": frame.filename,
+                        "line": frame.lineno,
+                        "function": frame.name,
+                    }
+                )
+        current = current.__cause__ or current.__context__
+    return frames
+
+
+app = create_app()
 
 
 def _request_id_of(request: Request) -> str:
@@ -1422,7 +1469,7 @@ def _dashboard_snapshot(user_id: UUID, organization_id: UUID, context: TenantCon
         set_request_principal(session, str(user_id))
         set_tenant_context(session, str(organization_id))
         payload = dashboard_payload(context, session)
-    return JSONResponse(content=payload).body
+    return bytes(JSONResponse(content=payload).body)
 
 
 @app.get(

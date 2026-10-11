@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
 from apps.api.processtwin_api.auth import hash_password
 from apps.api.processtwin_api.database import Base, SessionLocal, engine
 from apps.api.processtwin_api.models import (
@@ -72,10 +73,10 @@ def setup_tenant() -> tuple[TestClient, dict[str, str], Sensor]:
         "X-Organization-ID": body["organizations"][0]["id"],
     }
     with SessionLocal() as session:
-        sensor = session.get(Sensor, sensor_id)
-        assert sensor is not None
-        session.expunge(sensor)
-    return client, headers, sensor
+        loaded_sensor = session.get(Sensor, sensor_id)
+        assert loaded_sensor is not None
+        session.expunge(loaded_sensor)
+    return client, headers, loaded_sensor
 
 
 def test_authenticated_tenant_can_list_only_its_plants() -> None:
@@ -123,7 +124,7 @@ def test_login_cors_preflight_allows_only_the_configured_origin() -> None:
 
 
 def test_production_disables_docs_but_keeps_login_route_and_configured_cors(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from apps.api.processtwin_api import main
     from apps.api.processtwin_api.config import Settings
@@ -133,7 +134,7 @@ def test_production_disables_docs_but_keeps_login_route_and_configured_cors(
         database_url="postgresql+psycopg://processtwin:synthetic-password@localhost/processtwin",
         jwt_secret="synthetic-production-secret-not-for-deployment-0123456789",
         metrics_token="synthetic-production-metrics-not-for-deployment-0123456789",
-        cors_origins="https://web.example.test",
+        cors_origins="https://plantwin.vercel.app",
         demo_email=None,
         demo_password=None,
     )
@@ -152,13 +153,15 @@ def test_production_disables_docs_but_keeps_login_route_and_configured_cors(
     allowed = client.options(
         "/api/v1/auth/login",
         headers={
-            "Origin": "https://web.example.test",
+            "Origin": "https://plantwin.vercel.app",
             "Access-Control-Request-Method": "POST",
             "Access-Control-Request-Headers": "content-type",
         },
     )
     assert allowed.status_code == 200
-    assert allowed.headers["access-control-allow-origin"] == "https://web.example.test"
+    assert allowed.headers["access-control-allow-origin"] == "https://plantwin.vercel.app"
+    assert "POST" in allowed.headers["access-control-allow-methods"]
+    assert "content-type" in allowed.headers["access-control-allow-headers"].lower()
 
     rejected = client.options(
         "/api/v1/auth/login",
@@ -177,13 +180,69 @@ def test_login_normalizes_email_and_returns_auth_tokens() -> None:
     response = client.post(
         "/api/v1/auth/login",
         json={"email": " TESTER@EXAMPLE.TEST ", "password": "CorrectHorseBattery1"},
+        headers={"Origin": "http://localhost:3000"},
     )
     assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
     body = response.json()
     assert body["token_type"] == "bearer"
     assert body["access_token"]
     assert body["refresh_token"]
     assert body["organizations"]
+
+
+def test_login_invalid_credentials_returns_401_with_cors() -> None:
+    client, _, _ = setup_tenant()
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "tester@example.test", "password": "IncorrectPassword"},
+        headers={"Origin": "http://localhost:3000"},
+    )
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "INVALID_CREDENTIALS"
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+
+
+def test_login_unexpected_error_is_logged_safely_and_keeps_cors(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from apps.api.processtwin_api import main
+
+    client, _, _ = setup_tenant()
+    exception_text = "synthetic error detail that must not enter logs"
+
+    def fail_password_check(_password: str, _password_hash: str) -> bool:
+        raise RuntimeError(exception_text)
+
+    monkeypatch.setattr(main, "verify_password", fail_password_check)
+    caplog.set_level("ERROR", logger="processtwin.api")
+    request_id = "diagnostic-request-123"
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "tester@example.test", "password": "SyntheticNotASecret"},
+        headers={
+            "Origin": "http://localhost:3000",
+            "X-Request-ID": request_id,
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "INTERNAL_ERROR"
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert response.headers["x-request-id"] == request_id
+    assert exception_text not in caplog.text
+    error_record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "request_id", None) == request_id
+    )
+    logged_fields = vars(error_record)
+    assert logged_fields["exception_type"] == "RuntimeError"
+    assert logged_fields["exception_chain"][0] == "RuntimeError"
+    assert any(
+        frame["function"] == "fail_password_check"
+        for frame in logged_fields["exception_frames"]
+    )
 
 
 def test_invalid_sensor_value_is_rejected_but_quality_event_is_audited() -> None:
