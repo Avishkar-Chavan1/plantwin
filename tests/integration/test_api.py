@@ -232,14 +232,14 @@ def test_login_unexpected_error_is_logged_safely_and_keeps_cors(
         "/api/v1/auth/login",
         json={"email": "tester@example.test", "password": "SyntheticNotASecret"},
         headers={
-            "Origin": "http://localhost:3000",
+            "Origin": "https://plantwin.vercel.app",
             "X-Request-ID": request_id,
         },
     )
 
     assert response.status_code == 500
     assert response.json()["error"]["code"] == "INTERNAL_ERROR"
-    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert response.headers["access-control-allow-origin"] == "https://plantwin.vercel.app"
     assert response.headers["x-request-id"] == request_id
     assert exception_text not in caplog.text
     error_record = next(

@@ -85,7 +85,7 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         jwt_audience="processtwin-web",
         access_token_expire_minutes=30,
         refresh_token_expire_days=7,
-        cors_origins="http://localhost:3000",
+        cors_origins="http://localhost:3000,https://plantwin.vercel.app",
         max_upload_bytes=5_000_000,
         max_request_bytes=5_256_000,
         rate_limit_requests=120,
