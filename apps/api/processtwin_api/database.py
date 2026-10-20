@@ -35,6 +35,7 @@ engine = create_engine(
             else {
                 "connect_timeout": settings.database_connect_timeout_s,
                 "application_name": "processtwin-api",
+                "options": "-c search_path=public",
             }
         ),
     ),

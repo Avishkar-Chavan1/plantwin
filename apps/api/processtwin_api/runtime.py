@@ -38,11 +38,38 @@ def _database_environments(
     if not runtime.username or not admin.username or runtime.username == admin.username:
         raise RuntimeError("DATABASE_URL and DATABASE_ADMIN_URL must use separate database roles")
 
-    migration_environ = {**environ, "DATABASE_URL": admin_url}
+    app_role = runtime.username or ""
+    migration_environ = {
+        **environ,
+        "DATABASE_URL": admin_url,
+        "APP_ROLE": app_role,
+    }
     migration_environ.pop("DATABASE_ADMIN_URL", None)
     api_environ = environ.copy()
     api_environ.pop("DATABASE_ADMIN_URL", None)
     return migration_environ, api_environ
+
+
+def _verify_database_readiness(runtime_url: str) -> None:
+    """Verify that the application non-owner role can query the required tables before exec'ing API."""
+    if os.environ.get("ENVIRONMENT") == "test" and "example.test" in runtime_url:
+        return
+    from sqlalchemy import create_engine, text
+
+    probe_engine = create_engine(
+        runtime_url,
+        connect_args={"connect_timeout": 5, "options": "-c search_path=public"},
+    )
+    try:
+        with probe_engine.connect() as connection:
+            connection.execute(text("SELECT 1 FROM users LIMIT 1;"))
+    except Exception as exc:
+        raise RuntimeError(
+            f"Pre-flight database readiness check failed for application role: {exc}. "
+            "Ensure migrations completed successfully and the application role has USAGE and SELECT privileges."
+        ) from exc
+    finally:
+        probe_engine.dispose()
 
 
 def start_api() -> NoReturn:
@@ -57,6 +84,8 @@ def start_api() -> NoReturn:
         check=True,
         env=migration_environ,
     )
+
+    _verify_database_readiness(api_environ["DATABASE_URL"])
 
     os.environ.pop("DATABASE_ADMIN_URL", None)
     command = [

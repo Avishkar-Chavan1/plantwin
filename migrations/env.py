@@ -1,3 +1,5 @@
+import os
+
 import apps.api.processtwin_api.models  # noqa: F401 - register model metadata
 from alembic import context
 from alembic.ddl import postgresql
@@ -46,7 +48,12 @@ class ProcessTwinPostgresqlImpl(postgresql.PostgresqlImpl):
 _impls["postgresql"] = ProcessTwinPostgresqlImpl
 
 config = context.config
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+target_url = (
+    os.environ.get("DATABASE_ADMIN_URL", "").strip()
+    or get_settings().database_url
+    or config.get_main_option("sqlalchemy.url")
+)
+config.set_main_option("sqlalchemy.url", target_url)
 target_metadata = Base.metadata
 
 
@@ -62,13 +69,22 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    url = config.get_main_option("sqlalchemy.url") or ""
+    is_postgres = url.startswith(("postgresql", "postgres"))
+    connect_args = {"options": "-c search_path=public"} if is_postgres else {}
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=connect_args,
     )
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            compare_type=True,
+            version_table_schema="public" if is_postgres else None,
+        )
         with context.begin_transaction():
             context.run_migrations()
 

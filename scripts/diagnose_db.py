@@ -3,14 +3,20 @@
 Safely checks schemas, search_paths, table existence, permissions, and Alembic
 revisions across DATABASE_ADMIN_URL and DATABASE_URL without printing credentials
 or modifying any data.
+
+Usable locally:
+  python scripts/diagnose_db.py --admin "<admin_url>" --app "<app_url>"
+Or using environment variables:
+  DATABASE_ADMIN_URL="..." DATABASE_URL="..." python scripts/diagnose_db.py
 """
 
 from __future__ import annotations
 
+import argparse
 import logging
 import os
 import sys
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import psycopg
 
@@ -33,17 +39,38 @@ def mask_url(url: str | None) -> str:
         return "<invalid url>"
 
 
-def inspect_role(label: str, url: str) -> dict[str, object]:
+def normalize_connection_url(raw_url: str) -> str:
+    """Normalize SQLAlchemy/psycopg/Render URL variations for direct psycopg connection."""
+    url = raw_url.strip()
+    if url.startswith("postgresql+psycopg://"):
+        url = "postgresql://" + url[len("postgresql+psycopg://") :]
+    elif url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://") :]
+
+    parsed = urlparse(url)
+    hostname = parsed.hostname or ""
+    # If connecting to a remote cloud host (like Render), ensure sslmode=require
+    if hostname not in ("localhost", "127.0.0.1", ""):
+        query_params = parse_qs(parsed.query)
+        if "sslmode" not in query_params:
+            query_params["sslmode"] = ["require"]
+            new_query = urlencode(query_params, doseq=True)
+            url = urlunparse(parsed._replace(query=new_query))
+
+    return url
+
+
+def inspect_role(label: str, raw_url: str) -> dict[str, object]:
     """Execute read-only queries to inspect role context, schema, and tables."""
     print(f"\n{'=' * 70}")
-    print(f"[{label}] Inspecting: {mask_url(url)}")
+    print(f"[{label}] Inspecting: {mask_url(raw_url)}")
     print(f"{'=' * 70}")
 
+    url = normalize_connection_url(raw_url)
     results: dict[str, object] = {}
 
     try:
-        # Connect using autocommit (read-only queries)
-        with psycopg.connect(url, autocommit=True) as conn:
+        with psycopg.connect(url, autocommit=True, connect_timeout=10) as conn:
             with conn.cursor() as cur:
                 # 1. Connection identity
                 cur.execute(
@@ -100,8 +127,7 @@ def inspect_role(label: str, url: str) -> dict[str, object]:
                 if av_tables:
                     for av_schema, av_name in av_tables:
                         try:
-                            # Table name is hardcoded from information_schema lookup
-                            cur.execute('SELECT version_num FROM alembic_version;')
+                            cur.execute(f'SELECT version_num FROM "{av_schema}"."{av_name}";')  # noqa: S608
                             versions = [r[0] for r in cur.fetchall()]
                             print(f"  Alembic version in [{av_schema}.{av_name}]: {versions}")
                             results["alembic_version"] = versions
@@ -144,18 +170,34 @@ def inspect_role(label: str, url: str) -> dict[str, object]:
                 print(f"  'users' table locations: {user_tables or 'NONE'}")
                 results["users_locations"] = user_tables
 
-                # 7. Test query: SELECT count(*) FROM users
+                # 7. Unqualified query: SELECT count(*) FROM users
+                unqualified_ok = False
                 try:
                     cur.execute("SELECT count(*) FROM users;")
                     c_row = cur.fetchone()
                     count = c_row[0] if c_row else 0
-                    print(f"  Count query on users table: SUCCESS (count = {count})")
-                    results["users_query"] = "SUCCESS"
+                    print(f"  Unqualified query (users)        : SUCCESS (count = {count})")
+                    results["users_unqualified"] = "SUCCESS"
+                    unqualified_ok = True
                 except Exception as exc:
-                    print(f"  Count query on users table: FAILED -> {type(exc).__name__}: {exc}")
-                    results["users_query"] = f"{type(exc).__name__}: {exc}"
+                    print(f"  Unqualified query (users)        : FAILED -> {type(exc).__name__}: {exc}")
+                    results["users_unqualified"] = f"{type(exc).__name__}: {exc}"
 
-                # 8. Check RLS policies if any
+                # 8. Schema-qualified query: SELECT count(*) FROM public.users
+                try:
+                    cur.execute("SELECT count(*) FROM public.users;")
+                    c_row = cur.fetchone()
+                    count = c_row[0] if c_row else 0
+                    print(f"  Qualified query (public.users)   : SUCCESS (count = {count})")
+                    results["users_qualified"] = "SUCCESS"
+                    if not unqualified_ok:
+                        print("    [!] ROOT CAUSE DIAGNOSED: public.users exists, but unqualified resolution failed.")
+                        print("        The role's search_path does not search public, or USAGE on public was skipped.")
+                except Exception as exc:
+                    print(f"  Qualified query (public.users)   : FAILED -> {type(exc).__name__}: {exc}")
+                    results["users_qualified"] = f"{type(exc).__name__}: {exc}"
+
+                # 9. Check RLS policies if any
                 cur.execute(
                     """
                     SELECT schemaname, tablename, policyname, roles
@@ -176,27 +218,35 @@ def inspect_role(label: str, url: str) -> dict[str, object]:
 
 
 def main() -> int:
-    admin_url = os.environ.get("DATABASE_ADMIN_URL", "").strip()
-    runtime_url = os.environ.get("DATABASE_URL", "").strip()
+    parser = argparse.ArgumentParser(description="ProcessTwin Production Database Diagnostic")
+    parser.add_argument("--admin", default="", help="DATABASE_ADMIN_URL (Owner/Migrator)")
+    parser.add_argument("--app", default="", help="DATABASE_URL (App Non-Owner)")
+    args = parser.parse_args()
+
+    admin_url = args.admin or os.environ.get("DATABASE_ADMIN_URL", "").strip()
+    runtime_url = args.app or os.environ.get("DATABASE_URL", "").strip()
 
     print("=" * 70)
     print("ProcessTwin Production Database Diagnostic")
     print("=" * 70)
 
     if not admin_url and not runtime_url:
-        print("ERROR: Neither DATABASE_ADMIN_URL nor DATABASE_URL is set in environment.")
+        print("ERROR: Neither DATABASE_ADMIN_URL nor DATABASE_URL was provided.")
         print("Usage:")
-        print("  python scripts/diagnose_db.py")
-        print("Or set DATABASE_ADMIN_URL and DATABASE_URL before invoking.")
+        print("  python scripts/diagnose_db.py --admin 'postgres://...' --app 'postgres://...'")
+        print("Or set DATABASE_ADMIN_URL and DATABASE_URL in your environment before running.")
         return 1
 
+    admin_res: dict[str, object] = {}
+    runtime_res: dict[str, object] = {}
+
     if admin_url:
-        inspect_role("DATABASE_ADMIN_URL (Owner/Migrator)", admin_url)
+        admin_res = inspect_role("DATABASE_ADMIN_URL (Owner/Migrator)", admin_url)
     else:
         print("\n[DATABASE_ADMIN_URL]: NOT SET")
 
     if runtime_url:
-        inspect_role("DATABASE_URL (App Non-Owner)", runtime_url)
+        runtime_res = inspect_role("DATABASE_URL (App Non-Owner)", runtime_url)
     else:
         print("\n[DATABASE_URL]: NOT SET")
 
@@ -216,6 +266,22 @@ def main() -> int:
         if not target_match:
             print(f"   Admin host/path : {u_admin.hostname}:{u_admin.port}{u_admin.path}")
             print(f"   App host/path   : {u_app.hostname}:{u_app.port}{u_app.path}")
+
+    # Check findings
+    admin_av = admin_res.get("alembic_version")
+    admin_users = admin_res.get("users_locations")
+    app_uq = runtime_res.get("users_unqualified")
+
+    if admin_av and not admin_users:
+        print("\n[CRITICAL ROOT CAUSE IDENTIFIED: FALSE REVISION STAMP]")
+        print("  - alembic_version contains revisions, but 'users' table does NOT exist in the database.")
+        print("  - Cause: The database was stamped or initialized with alembic_version without executing DDL.")
+        print("  - Solution: With the updated migration runner, deploying will automatically detect this,")
+        print("    clear the orphaned marker, and run full migrations cleanly.")
+    elif app_uq and app_uq != "SUCCESS":
+        print("\n[CRITICAL ROOT CAUSE IDENTIFIED: PERMISSION OR SEARCH_PATH ISSUE]")
+        print(f"  - App role query failed with: {app_uq}")
+        print("  - Solution: Ensure the app role has USAGE on schema public and table DML privileges.")
 
     return 0
 
