@@ -210,6 +210,23 @@ def inspect_role(label: str, raw_url: str) -> dict[str, object]:
                 print(f"  ProcessTwin RLS policies count: {len(policies)}")
                 results["policy_count"] = len(policies)
 
+                # 10. Table-level privilege check for key tables
+                key_tables = ["users", "organizations", "plants", "refresh_tokens"]
+                print("  Table-level privileges (current_user):")
+                for tbl in key_tables:
+                    try:
+                        privs = []
+                        for priv in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+                            has = cur.execute(
+                                "SELECT has_table_privilege(current_user, %s, %s);",
+                                (f"public.{tbl}", priv),
+                            ).fetchone()
+                            if has and has[0]:
+                                privs.append(priv)
+                        print(f"    public.{tbl}: {', '.join(privs) if privs else 'NONE'}")
+                    except Exception as exc:
+                        print(f"    public.{tbl}: ERROR checking privileges -> {type(exc).__name__}: {exc}")
+
     except Exception as exc:
         print(f"  ERROR connecting with {label}: {type(exc).__name__}: {exc}")
         results["error"] = f"{type(exc).__name__}: {exc}"
@@ -273,13 +290,18 @@ def main() -> int:
     app_uq = runtime_res.get("users_unqualified")
 
     if admin_av and not admin_users:
-        print("\n[CRITICAL ROOT CAUSE IDENTIFIED: FALSE REVISION STAMP]")
+        print("\n[CRITICAL: SCHEMA / REVISION MISMATCH]")
         print("  - alembic_version contains revisions, but 'users' table does NOT exist in the database.")
         print("  - Cause: The database was stamped or initialized with alembic_version without executing DDL.")
-        print("  - Solution: With the updated migration runner, deploying will automatically detect this,")
-        print("    clear the orphaned marker, and run full migrations cleanly.")
+        print("  - ACTION REQUIRED:")
+        print("    1. Run this diagnostic to confirm no application data exists in any schema.")
+        print("    2. If the database is truly empty except for alembic_version, manually run:")
+        print("         DELETE FROM public.alembic_version;")
+        print("       using the admin connection string.")
+        print("    3. Redeploy. The migration runner will then execute all DDL from scratch.")
+        print("  - DO NOT auto-repair without inspecting. Other tables or data may exist.")
     elif app_uq and app_uq != "SUCCESS":
-        print("\n[CRITICAL ROOT CAUSE IDENTIFIED: PERMISSION OR SEARCH_PATH ISSUE]")
+        print("\n[CRITICAL: PERMISSION OR SEARCH_PATH ISSUE]")
         print(f"  - App role query failed with: {app_uq}")
         print("  - Solution: Ensure the app role has USAGE on schema public and table DML privileges.")
 

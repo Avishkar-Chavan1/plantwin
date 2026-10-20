@@ -71,6 +71,16 @@ def _grant_app_role_permissions(connection: Connection, app_role: str) -> None:
     logger.info("Granted schema USAGE and table DML privileges to role '%s'", clean_role)
 
 
+class SchemaMismatchError(RuntimeError):
+    """Raised when alembic_version disagrees with the actual database schema.
+
+    This is a fatal startup error that requires manual inspection.  The
+    migration runner intentionally does NOT auto-repair because the database
+    may contain other tables, existing accounts, or historical data that
+    should not be discarded silently.
+    """
+
+
 def run_migrations(override_url: str | None = None) -> None:
     """Upgrade to head, serializing PostgreSQL callers with an advisory lock."""
     admin_url = os.environ.get("DATABASE_ADMIN_URL", "").strip()
@@ -97,17 +107,37 @@ def run_migrations(override_url: str | None = None) -> None:
                 {"lock_id": _MIGRATION_ADVISORY_LOCK},
             )
             try:
-                # 1. Self-healing check for orphaned alembic_version on empty database
+                # 1. Pre-migration sanity check: detect alembic_version /
+                #    schema disagreement *before* running anything.
                 try:
                     inspector = inspect(connection)
                     initial_tables = set(inspector.get_table_names(schema="public"))
                     if "alembic_version" in initial_tables and not (initial_tables & _CORE_TABLES):
-                        logger.warning(
-                            "alembic_version exists but core tables are missing from schema public; "
-                            "clearing orphaned version marker to ensure migrations run."
+                        # Read the recorded revision(s) for the diagnostic message.
+                        rows = connection.execute(
+                            text("SELECT version_num FROM public.alembic_version;")
+                        ).fetchall()
+                        stamped = [r[0] for r in rows] if rows else ["<empty>"]
+                        present = sorted(initial_tables - {"alembic_version"})
+                        # Build the diagnostic message components.
+                        tables_present = ", ".join(present) if present else "<none>"
+                        core_names = ", ".join(sorted(_CORE_TABLES))
+                        msg = (
+                            f"FATAL: alembic_version is stamped at {stamped} "
+                            f"but none of the core application tables "
+                            f"({core_names}) exist in schema public.  "
+                            f"Tables present: {tables_present}.\n"
+                            "This usually means the database was stamped without "
+                            "running DDL, or migrations executed against a "
+                            "different schema.\n"
+                            "ACTION REQUIRED: Inspect the production database "
+                            "with scripts/diagnose_db.py, verify no user data "
+                            "exists, then manually clear the alembic_version "
+                            "table before redeploying."
                         )
-                        connection.execute(text("DELETE FROM public.alembic_version;"))
-                        connection.commit()
+                        raise SchemaMismatchError(msg)
+                except SchemaMismatchError:
+                    raise
                 except Exception as exc:
                     logger.debug("Pre-migration inspection skipped: %s", exc)
 
