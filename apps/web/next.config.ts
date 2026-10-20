@@ -47,11 +47,15 @@ const contentSecurityPolicy = [
   "frame-ancestors 'none'",
 ].join("; ");
 
-// `standalone` output is required by the production container image (Dockerfile.prod). On Windows
-// developer machines the standalone trace step needs symlink privileges that are off by default;
-// set NEXT_DISABLE_STANDALONE=1 for local builds. Vercel ignores `standalone` and builds its own
+// `standalone` output is required by the production container image (Dockerfile.prod, which runs
+// in Linux). On Windows developer hosts the standalone trace step requires elevated symlink
+// privileges (SE_CREATE_SYMBOLIC_LINK_NAME) that fail with EPERM; disable standalone on Windows
+// unless explicitly requested via NEXT_STANDALONE=1. Vercel ignores `standalone` and builds its own
 // output, so it is disabled there as well.
-const disableStandalone = process.env.NEXT_DISABLE_STANDALONE === "1" || Boolean(process.env.VERCEL);
+const disableStandalone =
+  process.env.NEXT_DISABLE_STANDALONE === "1" ||
+  Boolean(process.env.VERCEL) ||
+  (process.platform === "win32" && process.env.NEXT_STANDALONE !== "1");
 
 const nextConfig: NextConfig = {
   ...(disableStandalone ? {} : { output: "standalone" }),

@@ -728,22 +728,3 @@ class LiveIngestionGateway:
             )
         return anomaly
 
-    @staticmethod
-    def _model_in_envelope(
-        model: ModelVersion | None, inputs: CSTRInputs, density: float
-    ) -> bool | None:
-        if model is None or not model.operating_envelope:
-            return None
-        values = {
-            "temperature_k": inputs.feed_temperature_k,
-            "temperature_c": convert(inputs.feed_temperature_k, "K", "degC"),
-            "pressure_pa": inputs.pressure_pa,
-            "pressure_bar": convert(inputs.pressure_pa, "Pa", "bar"),
-            "feed_flow_m3_s": inputs.feed_flow_m3_s,
-            "feed_flow_kg_s": inputs.feed_flow_m3_s * density,
-            "feed_flow_kg_h": inputs.feed_flow_m3_s * density * 3600,
-        }
-        return all(
-            name in values and float(bounds["minimum"]) <= values[name] <= float(bounds["maximum"])
-            for name, bounds in model.operating_envelope.items()
-        )

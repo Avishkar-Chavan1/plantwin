@@ -7,7 +7,7 @@ write to, command, or set values on a plant system; connector sources are always
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, NoReturn
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -123,7 +123,7 @@ class ConnectorValidationRuleInput(BaseModel):
         return cleaned
 
 
-def _raise(code: str, message: str, status: int = 422) -> None:
+def _raise(code: str, message: str, status: int = 422) -> NoReturn:
     raise HTTPException(status, detail={"code": code, "message": message})
 
 
@@ -151,7 +151,6 @@ def _tenant_source(session: Session, source_id: UUID, organization_id: UUID) -> 
     )
     if source is None:
         _raise("CONNECTOR_NOT_FOUND", "Connector source was not found", 404)
-    assert source is not None
     return source
 
 
@@ -179,7 +178,6 @@ def create_connector_source(
     )
     if plant is None:
         _raise("PLANT_NOT_FOUND", "Plant was not found in this organization", 404)
-    assert plant is not None
     source = DataSource(
         organization_id=context.organization_id,
         plant_id=plant.id,
@@ -237,7 +235,6 @@ def create_connector_tag(
     )
     if plant is None:
         _raise("PLANT_NOT_FOUND", "Plant was not found in this organization", 404)
-    assert plant is not None
     if (
         payload.minimum_si is not None
         and payload.maximum_si is not None
@@ -338,7 +335,6 @@ def create_connector_tag_mapping(
     )
     if source is None:
         _raise("CONNECTOR_NOT_FOUND", "Read-only connector source was not found", 404)
-    assert source is not None
     sensor = session.scalar(
         select(Sensor).where(
             and_(
@@ -350,7 +346,6 @@ def create_connector_tag_mapping(
     )
     if sensor is None:
         _raise("SENSOR_NOT_FOUND", "Enabled sensor was not found in this organization", 404)
-    assert sensor is not None
     tag = session.scalar(
         select(ConnectorTag).where(
             and_(
@@ -361,7 +356,6 @@ def create_connector_tag_mapping(
     )
     if tag is None:
         _raise("CONNECTOR_TAG_NOT_FOUND", "Connector tag was not found in this organization", 404)
-    assert tag is not None
     try:
         from packages.units import convert
 
@@ -485,7 +479,6 @@ def create_connector_validation_rule(
     )
     if tag is None:
         _raise("CONNECTOR_TAG_NOT_FOUND", "Connector tag was not found in this organization", 404)
-    assert tag is not None
     existing = session.scalar(
         select(ConnectorValidationRule.id).where(
             and_(

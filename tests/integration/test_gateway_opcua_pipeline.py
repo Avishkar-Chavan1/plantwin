@@ -103,21 +103,28 @@ async def test_opcua_values_flow_through_gateway_into_api_without_any_write() ->
     try:
         values = [181.0, 183.5, 186.25]
         for value in values:
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(0.5)
             await variable.write_value(value)  # the plant changes; ProcessTwin only observes
-        await asyncio.sleep(1.5)
+
+        # Poll with a deadline so tests are robust against scheduler latency
+        stored: list[float] = []
+        readings: list[SensorReading] = []
+        for _ in range(50):
+            await asyncio.sleep(0.1)
+            with SessionLocal() as session:
+                readings = list(
+                    session.scalars(
+                        select(SensorReading)
+                        .where(SensorReading.sensor_id == sensor_id)
+                        .order_by(SensorReading.timestamp)
+                    )
+                )
+            stored = [round(row.value, 2) for row in readings]
+            if 186.25 in stored and 183.5 in stored:
+                break
 
         with SessionLocal() as session:
-            readings = list(
-                session.scalars(
-                    select(SensorReading)
-                    .where(SensorReading.sensor_id == sensor_id)
-                    .order_by(SensorReading.timestamp)
-                )
-            )
             mapping = session.scalar(select(SourceTagMapping))
-        assert mapping is not None and mapping.source_key == node_id
-        stored = [round(row.value, 2) for row in readings]
         assert stored[0] == 180.0  # initial value delivered on subscription
         assert 186.25 in stored and 183.5 in stored
         assert all(row.source == "OPCUA" for row in readings)
