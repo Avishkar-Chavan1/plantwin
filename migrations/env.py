@@ -48,11 +48,17 @@ class ProcessTwinPostgresqlImpl(postgresql.PostgresqlImpl):
 _impls["postgresql"] = ProcessTwinPostgresqlImpl
 
 config = context.config
-target_url = (
-    os.environ.get("DATABASE_ADMIN_URL", "").strip()
-    or get_settings().database_url
-    or config.get_main_option("sqlalchemy.url")
-)
+admin_url = os.environ.get("DATABASE_ADMIN_URL", "").strip()
+config_url = config.get_main_option("sqlalchemy.url")
+default_ini_url = "sqlite:///./processtwin.db"
+
+if admin_url:
+    target_url = admin_url
+elif config_url and config_url != default_ini_url:
+    target_url = config_url
+else:
+    target_url = get_settings().database_url or config_url or default_ini_url
+
 config.set_main_option("sqlalchemy.url", target_url)
 target_metadata = Base.metadata
 
