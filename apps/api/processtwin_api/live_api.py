@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, NoReturn
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -77,7 +77,7 @@ class CreateSourceRequest(BaseModel):
         return value
 
 
-def _raise(code: str, message: str, status: int = 422) -> None:
+def _raise(code: str, message: str, status: int = 422) -> NoReturn:
     raise HTTPException(status, detail={"code": code, "message": message})
 
 
@@ -196,7 +196,6 @@ def create_source(
     )
     if plant is None:
         _raise("PLANT_NOT_FOUND", "Plant was not found in this organization", 404)
-    assert plant is not None
     if len({item.source_key for item in payload.mappings}) != len(payload.mappings):
         _raise("DUPLICATE_SOURCE_KEY", "Each connector source key must be mapped once")
     for item in payload.mappings:
@@ -219,7 +218,6 @@ def create_source(
                 f"Enabled sensor {item.sensor_id} was not found in this plant",
                 404,
             )
-        assert sensor is not None
         try:
             from packages.units import convert
 
@@ -292,7 +290,6 @@ def get_source(
     )
     if source is None:
         _raise("DATA_SOURCE_NOT_FOUND", "Data source was not found", 404)
-    assert source is not None
     return source_payload(source)
 
 
@@ -310,7 +307,6 @@ def source_readings(
     )
     if source is None:
         _raise("DATA_SOURCE_NOT_FOUND", "Data source was not found", 404)
-    assert source is not None
     mappings = list(
         session.scalars(
             select(SourceTagMapping).where(

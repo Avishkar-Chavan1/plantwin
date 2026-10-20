@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, NoReturn
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -35,7 +35,7 @@ class RecommendationReviewRequest(BaseModel):
     comment: str = Field(min_length=5, max_length=2000)
 
 
-def _raise(code: str, message: str, status: int = 422) -> None:
+def _raise(code: str, message: str, status: int = 422) -> NoReturn:
     raise HTTPException(status, detail={"code": code, "message": message})
 
 
@@ -175,7 +175,6 @@ def latest_twin(
     )
     if equipment is None:
         _raise("EQUIPMENT_NOT_FOUND", "Equipment was not found", 404)
-    assert equipment is not None
     state = session.scalar(
         select(TwinState)
         .where(
@@ -189,7 +188,6 @@ def latest_twin(
     )
     if state is None:
         _raise("TWIN_STATE_UNAVAILABLE", "No synchronized twin state is available", 404)
-    assert state is not None
     previous = list(
         session.scalars(
             select(TwinState)
@@ -298,7 +296,6 @@ def review_recommendation(
     )
     if item is None:
         _raise("RECOMMENDATION_NOT_FOUND", "Recommendation was not found", 404)
-    assert item is not None
     now = datetime.now(UTC)
     if item.status in FINAL_STATES or (
         item.expires_at and as_utc(item.expires_at) <= now
@@ -364,7 +361,6 @@ def recommendation_reviews(
     )
     if item is None:
         _raise("RECOMMENDATION_NOT_FOUND", "Recommendation was not found", 404)
-    assert item is not None
     reviews = list(
         session.scalars(
             select(RecommendationReview)

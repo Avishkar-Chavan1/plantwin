@@ -73,6 +73,7 @@ src = ["apps", "packages", "connectors", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "S"]
+ignore = ["E501"] # Ruff formatter owns layout; long engineering identifiers and advisory text remain readable.
 
 [tool.ruff.lint.per-file-ignores]
 # `assert` is the idiomatic pytest assertion form; S101 is scoped to test code only.

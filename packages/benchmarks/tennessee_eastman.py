@@ -271,7 +271,7 @@ def download_public_tep_dataset(
         raise ValueError(
             f"Unknown public TEP dataset {dataset_name!r}; available: {available}"
         ) from exc
-    request = Request(source_url, headers={"User-Agent": "ProcessTwin-public-benchmark/0.1"})
+    request = Request(source_url, headers={"User-Agent": "ProcessTwin-public-benchmark/0.1"})  # noqa: S310 - fixed public allow-list above.
     with urlopen(request, timeout=timeout_s) as response:  # noqa: S310 - fixed public allow-list above.
         raw = response.read()
     _read_tep_matrix(raw)

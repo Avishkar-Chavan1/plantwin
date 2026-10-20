@@ -125,6 +125,7 @@ async def test_opcua_values_flow_through_gateway_into_api_without_any_write() ->
 
         with SessionLocal() as session:
             mapping = session.scalar(select(SourceTagMapping))
+        assert mapping is not None
         assert stored[0] == 180.0  # initial value delivered on subscription
         assert 186.25 in stored and 183.5 in stored
         assert all(row.source == "OPCUA" for row in readings)
