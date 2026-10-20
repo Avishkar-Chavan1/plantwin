@@ -19,6 +19,10 @@ def _database_environments(
     admin_url = environ.get("DATABASE_ADMIN_URL", "").strip()
     if not runtime_url or not admin_url:
         raise RuntimeError("DATABASE_URL and DATABASE_ADMIN_URL are required at API startup")
+    if runtime_url.startswith("postgres://"):
+        runtime_url = "postgresql://" + runtime_url[len("postgres://") :]
+    if admin_url.startswith("postgres://"):
+        admin_url = "postgresql://" + admin_url[len("postgres://") :]
     runtime = urlparse(runtime_url)
     admin = urlparse(admin_url)
     if not runtime.scheme.startswith("postgresql"):

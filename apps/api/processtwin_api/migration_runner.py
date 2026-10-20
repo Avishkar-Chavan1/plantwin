@@ -85,6 +85,8 @@ def run_migrations(override_url: str | None = None) -> None:
     """Upgrade to head, serializing PostgreSQL callers with an advisory lock."""
     admin_url = os.environ.get("DATABASE_ADMIN_URL", "").strip()
     database_url = override_url or admin_url or get_settings().database_url
+    if database_url.startswith("postgres://"):
+        database_url = "postgresql://" + database_url[len("postgres://") :]
     alembic_config = _alembic_config()
     if hasattr(alembic_config, "set_main_option"):
         alembic_config.set_main_option("sqlalchemy.url", database_url)

@@ -137,6 +137,8 @@ class Settings(BaseSettings):
         v = v.strip()
         if not v:
             raise ValueError("DATABASE_URL is required")
+        if v.startswith("postgres://"):
+            v = "postgresql://" + v[len("postgres://") :]
         return v
 
     @field_validator("jwt_secret", mode="before")
@@ -185,7 +187,11 @@ class Settings(BaseSettings):
                 )
             for origin in self.cors_origins_parsed:
                 parsed_origin = urlparse(origin)
-                if parsed_origin.scheme != "https":
+                is_local = (
+                    parsed_origin.scheme == "http"
+                    and parsed_origin.hostname in ("localhost", "127.0.0.1")
+                )
+                if parsed_origin.scheme != "https" and not is_local:
                     raise ValueError("Production CORS origins must use HTTPS")
             if self.oidc_enabled and (not self.oidc_issuer_url or not self.oidc_client_id):
                 raise ValueError("OIDC issuer URL and client ID required when OIDC is enabled")

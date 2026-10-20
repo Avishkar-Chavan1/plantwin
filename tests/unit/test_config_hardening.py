@@ -76,6 +76,27 @@ def test_production_rejects_demo_credentials() -> None:
         )
 
 
+def test_production_accepts_localhost_cors_origin() -> None:
+    settings = _settings(
+        environment="production",
+        database_url="postgresql+psycopg://user:pass@db.example.com/processtwin",
+        metrics_token="b" * 48,
+        cors_origins="https://plantwin.vercel.app,http://localhost:3000,http://127.0.0.1:3000",
+    )
+    assert settings.is_production is True
+    assert "http://localhost:3000" in settings.cors_origins_parsed
+
+
+def test_database_url_normalizes_postgres_scheme() -> None:
+    settings = _settings(
+        environment="production",
+        database_url="postgres://user:pass@db.example.com/processtwin",
+        metrics_token="b" * 48,
+        cors_origins="https://operator.example.com",
+    )
+    assert settings.database_url.startswith("postgresql://")
+
+
 def test_production_accepts_a_valid_configuration() -> None:
     settings = _settings(
         environment="production",

@@ -59,6 +59,9 @@ elif config_url and config_url != default_ini_url:
 else:
     target_url = get_settings().database_url or config_url or default_ini_url
 
+if target_url.startswith("postgres://"):
+    target_url = "postgresql://" + target_url[len("postgres://") :]
+
 config.set_main_option("sqlalchemy.url", target_url)
 target_metadata = Base.metadata
 
