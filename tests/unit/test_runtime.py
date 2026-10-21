@@ -110,6 +110,30 @@ def test_runtime_rejects_same_database_role_for_migrations_and_api(
         runtime.start_api()
 
 
+def test_runtime_accepts_same_database_role_when_explicitly_permitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", _RUNTIME_URL)
+    monkeypatch.setenv("DATABASE_ADMIN_URL", _RUNTIME_URL)
+    monkeypatch.setenv("ALLOW_SAME_DATABASE_ROLE", "true")
+    monkeypatch.setenv("PORT", "10000")
+
+    def record_migration(*_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    class ExecReached(BaseException):
+        pass
+
+    def record_exec(*_args: Any, **_kwargs: Any) -> None:
+        raise ExecReached
+
+    monkeypatch.setattr(subprocess, "run", record_migration)
+    monkeypatch.setattr(os, "execvpe", record_exec)
+
+    with pytest.raises(ExecReached):
+        runtime.start_api()
+
+
 def test_concurrent_startup_migrations_are_serialized_by_advisory_lock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

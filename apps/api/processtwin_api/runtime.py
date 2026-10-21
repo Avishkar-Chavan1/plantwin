@@ -40,7 +40,8 @@ def _database_environments(
     ):
         raise RuntimeError("DATABASE_URL and DATABASE_ADMIN_URL must target the same database")
     if not runtime.username or not admin.username or runtime.username == admin.username:
-        raise RuntimeError("DATABASE_URL and DATABASE_ADMIN_URL must use separate database roles")
+        if environ.get("ALLOW_SAME_DATABASE_ROLE", "").lower() not in ("1", "true", "yes"):
+            raise RuntimeError("DATABASE_URL and DATABASE_ADMIN_URL must use separate database roles")
 
     app_role = runtime.username or ""
     migration_environ = {
@@ -50,6 +51,7 @@ def _database_environments(
     }
     migration_environ.pop("DATABASE_ADMIN_URL", None)
     api_environ = environ.copy()
+    api_environ["DATABASE_URL"] = runtime_url
     api_environ.pop("DATABASE_ADMIN_URL", None)
     return migration_environ, api_environ
 
@@ -58,6 +60,8 @@ def _verify_database_readiness(runtime_url: str) -> None:
     """Verify that the application non-owner role can query the required tables before exec'ing API."""
     if os.environ.get("ENVIRONMENT") == "test" and "example.test" in runtime_url:
         return
+    if runtime_url.startswith("postgres://"):
+        runtime_url = "postgresql://" + runtime_url[len("postgres://") :]
     from sqlalchemy import create_engine, text
 
     probe_engine = create_engine(
