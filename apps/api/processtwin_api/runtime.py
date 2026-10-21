@@ -25,23 +25,25 @@ def _database_environments(
         admin_url = "postgresql://" + admin_url[len("postgres://") :]
     runtime = urlparse(runtime_url)
     admin = urlparse(admin_url)
-    if not runtime.scheme.startswith("postgresql"):
-        raise RuntimeError("DATABASE_URL must target PostgreSQL at API startup")
-    if not admin.scheme.startswith("postgresql"):
-        raise RuntimeError("DATABASE_ADMIN_URL must target PostgreSQL at API startup")
-    if (
-        runtime.hostname,
-        runtime.port,
-        runtime.path,
-    ) != (
-        admin.hostname,
-        admin.port,
-        admin.path,
-    ):
-        raise RuntimeError("DATABASE_URL and DATABASE_ADMIN_URL must target the same database")
-    if not runtime.username or not admin.username or runtime.username == admin.username:
-        if environ.get("ALLOW_SAME_DATABASE_ROLE", "").lower() not in ("1", "true", "yes"):
-            raise RuntimeError("DATABASE_URL and DATABASE_ADMIN_URL must use separate database roles")
+    is_test_sqlite = environ.get("ENVIRONMENT") == "test" and runtime_url.startswith("sqlite")
+    if not is_test_sqlite:
+        if not runtime.scheme.startswith("postgresql"):
+            raise RuntimeError("DATABASE_URL must target PostgreSQL at API startup")
+        if not admin.scheme.startswith("postgresql"):
+            raise RuntimeError("DATABASE_ADMIN_URL must target PostgreSQL at API startup")
+        if (
+            runtime.hostname,
+            runtime.port,
+            runtime.path,
+        ) != (
+            admin.hostname,
+            admin.port,
+            admin.path,
+        ):
+            raise RuntimeError("DATABASE_URL and DATABASE_ADMIN_URL must target the same database")
+        if not runtime.username or not admin.username or runtime.username == admin.username:
+            if environ.get("ALLOW_SAME_DATABASE_ROLE", "").lower() not in ("1", "true", "yes"):
+                raise RuntimeError("DATABASE_URL and DATABASE_ADMIN_URL must use separate database roles")
 
     app_role = runtime.username or ""
     migration_environ = {
@@ -64,9 +66,15 @@ def _verify_database_readiness(runtime_url: str) -> None:
         runtime_url = "postgresql://" + runtime_url[len("postgres://") :]
     from sqlalchemy import create_engine, text
 
+    is_sqlite = runtime_url.startswith("sqlite")
+    connect_args = (
+        {}
+        if is_sqlite
+        else {"connect_timeout": 5, "options": "-c search_path=public"}
+    )
     probe_engine = create_engine(
         runtime_url,
-        connect_args={"connect_timeout": 5, "options": "-c search_path=public"},
+        connect_args=connect_args,
     )
     try:
         with probe_engine.connect() as connection:

@@ -37,6 +37,12 @@ def _uses_postgresql(database_url: str) -> bool:
 def _alembic_config() -> Config:
     """Locate the project-level Alembic configuration in source and images."""
     config_path = Path(__file__).resolve().parents[3] / "alembic.ini"
+    if not config_path.is_file():
+        cwd_ini = Path.cwd() / "alembic.ini"
+        if cwd_ini.is_file():
+            config_path = cwd_ini
+        elif Path("/app/alembic.ini").is_file():
+            config_path = Path("/app/alembic.ini")
     return Config(str(config_path))
 
 
