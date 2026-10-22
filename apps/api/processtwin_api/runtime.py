@@ -17,6 +17,16 @@ def _database_environments(
 ) -> tuple[dict[str, str], dict[str, str]]:
     runtime_url = environ.get("DATABASE_URL", "").strip()
     admin_url = environ.get("DATABASE_ADMIN_URL", "").strip()
+    allow_same_role = environ.get("ALLOW_SAME_DATABASE_ROLE", "").lower() in ("1", "true", "yes")
+
+    # If ALLOW_SAME_DATABASE_ROLE is enabled and admin_url is omitted, default to runtime_url
+    if not admin_url and allow_same_role and runtime_url:
+        admin_url = runtime_url
+
+    # For local development or test SQLite databases, default admin_url to runtime_url if omitted
+    if not admin_url and runtime_url.startswith("sqlite"):
+        admin_url = runtime_url
+
     if not runtime_url or not admin_url:
         raise RuntimeError("DATABASE_URL and DATABASE_ADMIN_URL are required at API startup")
     if runtime_url.startswith("postgres://"):
@@ -25,8 +35,9 @@ def _database_environments(
         admin_url = "postgresql://" + admin_url[len("postgres://") :]
     runtime = urlparse(runtime_url)
     admin = urlparse(admin_url)
-    is_test_sqlite = environ.get("ENVIRONMENT") == "test" and runtime_url.startswith("sqlite")
-    if not is_test_sqlite:
+    is_sqlite = runtime_url.startswith("sqlite")
+    is_test_or_dev = environ.get("ENVIRONMENT") in ("test", "development")
+    if not (is_test_or_dev and is_sqlite):
         if not runtime.scheme.startswith("postgresql"):
             raise RuntimeError("DATABASE_URL must target PostgreSQL at API startup")
         if not admin.scheme.startswith("postgresql"):
@@ -42,7 +53,7 @@ def _database_environments(
         ):
             raise RuntimeError("DATABASE_URL and DATABASE_ADMIN_URL must target the same database")
         if not runtime.username or not admin.username or runtime.username == admin.username:
-            if environ.get("ALLOW_SAME_DATABASE_ROLE", "").lower() not in ("1", "true", "yes"):
+            if not allow_same_role:
                 raise RuntimeError("DATABASE_URL and DATABASE_ADMIN_URL must use separate database roles")
 
     app_role = runtime.username or ""
@@ -88,43 +99,56 @@ def _verify_database_readiness(runtime_url: str) -> None:
         probe_engine.dispose()
 
 
-def start_api() -> NoReturn:
+def start_api(custom_command: list[str] | None = None) -> NoReturn:
     """Complete migrations before exec'ing one Gunicorn master process."""
+    print(">>> [ProcessTwin Startup] Initializing runtime...", flush=True)
     migration_environ, api_environ = _database_environments(dict(os.environ))
     port = api_environ.get("PORT", "8000")
     if not port.isdecimal() or not 1 <= int(port) <= 65535:
         raise RuntimeError("PORT must be a valid TCP port")
 
+    print(">>> [ProcessTwin Startup] Executing database migrations to head...", flush=True)
     subprocess.run(  # noqa: S603 - fixed module invocation, no shell, no user-controlled arguments
         [sys.executable, "-m", _MIGRATION_MODULE],
         check=True,
         env=migration_environ,
     )
 
+    print(">>> [ProcessTwin Startup] Migrations completed. Verifying database readiness...", flush=True)
     _verify_database_readiness(api_environ["DATABASE_URL"])
+    print(">>> [ProcessTwin Startup] Database readiness verified successfully.", flush=True)
 
     os.environ.pop("DATABASE_ADMIN_URL", None)
-    command = [
-        "gunicorn",
-        _API_APP,
-        "--bind",
-        f"0.0.0.0:{port}",
-        "--workers",
-        "1",
-        "--worker-class",
-        "uvicorn.workers.UvicornWorker",
-        "--access-logfile",
-        "-",
-        "--error-logfile",
-        "-",
-        "--log-level",
-        "info",
-    ]
+    if custom_command:
+        command = custom_command
+        print(f">>> [ProcessTwin Startup] Launching custom server command: {' '.join(command)}", flush=True)
+    else:
+        command = [
+            "gunicorn",
+            _API_APP,
+            "--bind",
+            f"0.0.0.0:{port}",
+            "--workers",
+            "1",
+            "--worker-class",
+            "uvicorn.workers.UvicornWorker",
+            "--access-logfile",
+            "-",
+            "--error-logfile",
+            "-",
+            "--log-level",
+            "info",
+        ]
+        print(f">>> [ProcessTwin Startup] Launching Gunicorn master on port {port}...", flush=True)
+
+    sys.stdout.flush()
+    sys.stderr.flush()
     os.execvpe(command[0], command, api_environ)  # noqa: S606 - replace launcher with API master
 
 
 def main() -> NoReturn:
-    start_api()
+    custom_command = sys.argv[1:] if len(sys.argv) > 1 else None
+    start_api(custom_command=custom_command)
 
 
 if __name__ == "__main__":

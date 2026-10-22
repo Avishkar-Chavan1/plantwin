@@ -68,4 +68,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 EXPOSE 8000
 
 # Run migrations once before the Gunicorn master starts.
-CMD ["python", "-m", "apps.api.processtwin_api.runtime"]
+# ENTRYPOINT guarantees that runtime.py executes and applies database migrations
+# before starting the API server, even if a custom container command is provided.
+ENTRYPOINT ["python", "-m", "apps.api.processtwin_api.runtime"]
+CMD []

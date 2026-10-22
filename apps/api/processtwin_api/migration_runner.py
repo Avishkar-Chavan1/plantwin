@@ -22,6 +22,17 @@ from .config import get_settings
 
 logger = logging.getLogger("processtwin.migrations")
 
+
+def _configure_migration_logging() -> None:
+    """Ensure Alembic and migration runner log messages are visible in stdout/stderr."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
+    )
+    logging.getLogger("alembic").setLevel(logging.INFO)
+    logging.getLogger("processtwin.migrations").setLevel(logging.INFO)
+
+
 # Stable, application-specific signed bigint used only to serialize this
 # application's schema changes. It is not an authorization boundary.
 _MIGRATION_ADVISORY_LOCK = 4_817_413_926_519
@@ -36,6 +47,8 @@ def _uses_postgresql(database_url: str) -> bool:
 
 def _alembic_config() -> Config:
     """Locate the project-level Alembic configuration in source and images."""
+    import sys
+
     config_path = Path(__file__).resolve().parents[3] / "alembic.ini"
     if not config_path.is_file():
         cwd_ini = Path.cwd() / "alembic.ini"
@@ -43,7 +56,17 @@ def _alembic_config() -> Config:
             config_path = cwd_ini
         elif Path("/app/alembic.ini").is_file():
             config_path = Path("/app/alembic.ini")
-    return Config(str(config_path))
+
+    cfg = Config(str(config_path))
+    # Explicitly set script_location to absolute path to guarantee migrations are located
+    # regardless of current working directory.
+    migrations_dir = config_path.parent / "migrations"
+    if migrations_dir.is_dir():
+        cfg.set_main_option("script_location", str(migrations_dir))
+    parent_dir_str = str(config_path.parent)
+    if parent_dir_str not in sys.path:
+        sys.path.insert(0, parent_dir_str)
+    return cfg
 
 
 def _grant_app_role_permissions(connection: Connection, app_role: str) -> None:
@@ -52,6 +75,19 @@ def _grant_app_role_permissions(connection: Connection, app_role: str) -> None:
     if not clean_role or not _SAFE_ROLE_RE.match(clean_role):
         logger.warning("Skipping app role grant: invalid role identifier '%s'", clean_role)
         return
+
+    # If the application role is the same as the current connected database user (table owner),
+    # all privileges are already inherent to the owner; avoid redundant self-grants.
+    try:
+        current_db_user = connection.execute(text("SELECT current_user;")).scalar()
+        if current_db_user and clean_role.lower() == str(current_db_user).lower():
+            logger.info(
+                "Application role '%s' is the database owner (current_user); skipping self-grants",
+                clean_role,
+            )
+            return
+    except Exception as exc:
+        logger.debug("Could not determine current_user: %s", exc)
 
     safe_role = f'"{clean_role}"'
     connection.execute(text(f"GRANT USAGE ON SCHEMA public TO {safe_role};"))
@@ -89,6 +125,7 @@ class SchemaMismatchError(RuntimeError):
 
 def run_migrations(override_url: str | None = None) -> None:
     """Upgrade to head, serializing PostgreSQL callers with an advisory lock."""
+    _configure_migration_logging()
     admin_url = os.environ.get("DATABASE_ADMIN_URL", "").strip()
     database_url = override_url or admin_url or get_settings().database_url
     if database_url.startswith("postgres://"):
@@ -97,10 +134,12 @@ def run_migrations(override_url: str | None = None) -> None:
     if hasattr(alembic_config, "set_main_option"):
         alembic_config.set_main_option("sqlalchemy.url", database_url)
 
+    logger.info("Executing Alembic migration upgrade to head...")
     # SQLite is used for local development and tests; advisory locks are a
     # PostgreSQL feature and a local migration command has no competing pods.
     if not _uses_postgresql(database_url):
         command.upgrade(alembic_config, "head")
+        logger.info("Alembic migrations completed successfully.")
         return
 
     lock_engine = create_engine(
@@ -151,6 +190,7 @@ def run_migrations(override_url: str | None = None) -> None:
 
                 # 2. Run migrations
                 command.upgrade(alembic_config, "head")
+                logger.info("Alembic upgrade head executed successfully.")
 
                 # 3. Post-migration schema verification
                 try:

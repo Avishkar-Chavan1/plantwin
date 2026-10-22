@@ -123,3 +123,36 @@ def test_production_runtime_refuses_to_start_gunicorn_if_migration_fails(
 
     assert server_reached is False, "Gunicorn must NOT start when migrations fail"
 
+def test_production_runtime_prints_startup_banners(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Proof that runtime.py prints clear, unbuffered startup banners for cloud logs."""
+    from apps.api.processtwin_api import runtime
+
+    db_file = tmp_path / "banners.db"
+    db_url = f"sqlite:///{db_file.as_posix()}"
+    monkeypatch.setenv("DATABASE_URL", db_url)
+    monkeypatch.setenv("DATABASE_ADMIN_URL", db_url)
+    monkeypatch.setenv("ALLOW_SAME_DATABASE_ROLE", "true")
+    monkeypatch.setenv("PORT", "9000")
+    monkeypatch.setenv("ENVIRONMENT", "test")
+    monkeypatch.setenv("JWT_SECRET", "test-secret-not-for-deployment-0123456789")
+
+    class ServerStarted(BaseException):
+        pass
+
+    def mock_execvpe(file: str, args: list[str], env: dict[str, str]) -> None:
+        raise ServerStarted
+
+    monkeypatch.setattr(os, "execvpe", mock_execvpe)
+
+    with pytest.raises(ServerStarted):
+        runtime.start_api()
+
+    captured = capsys.readouterr()
+    assert "[ProcessTwin Startup] Initializing runtime..." in captured.out
+    assert "[ProcessTwin Startup] Executing database migrations to head..." in captured.out
+    assert "[ProcessTwin Startup] Migrations completed." in captured.out
+    assert "[ProcessTwin Startup] Database readiness verified successfully." in captured.out
+    assert "[ProcessTwin Startup] Launching Gunicorn master on port 9000..." in captured.out
+

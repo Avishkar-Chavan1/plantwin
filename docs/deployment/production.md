@@ -24,7 +24,7 @@ Configure the Render web service as follows:
 | Dockerfile Path | `Dockerfile.api.prod` |
 | Build Command | Not used for Docker; Render builds the selected Dockerfile |
 | Start Command | Not used for Docker |
-| Docker Command | `python -m apps.api.processtwin_api.runtime` |
+| Docker Command | Leave blank (the image ENTRYPOINT automatically executes `runtime.py`) |
 | Health Check Path | `/ready` |
 
 In the Dashboard, set **Language** to **Docker** and enter the path above in

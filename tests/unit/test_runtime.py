@@ -134,6 +134,59 @@ def test_runtime_accepts_same_database_role_when_explicitly_permitted(
         runtime.start_api()
 
 
+def test_runtime_allows_omitted_admin_url_when_same_role_permitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", _RUNTIME_URL)
+    monkeypatch.delenv("DATABASE_ADMIN_URL", raising=False)
+    monkeypatch.setenv("ALLOW_SAME_DATABASE_ROLE", "true")
+    monkeypatch.setenv("PORT", "8000")
+
+    def record_migration(*_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    class ExecReached(BaseException):
+        pass
+
+    def record_exec(executable: str, args: list[str], env: dict[str, str]) -> None:
+        assert executable == "gunicorn"
+        assert env["DATABASE_URL"] == _RUNTIME_URL
+        assert "DATABASE_ADMIN_URL" not in env
+        raise ExecReached
+
+    monkeypatch.setattr(subprocess, "run", record_migration)
+    monkeypatch.setattr(os, "execvpe", record_exec)
+
+    with pytest.raises(ExecReached):
+        runtime.start_api()
+
+
+def test_runtime_executes_custom_command_after_migrations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_required_environment(monkeypatch)
+    events: list[str] = []
+
+    def record_migration(*_args: Any, **_kwargs: Any) -> None:
+        events.append("migration")
+
+    class ExecReached(BaseException):
+        pass
+
+    def record_exec(executable: str, args: list[str], env: dict[str, str]) -> None:
+        events.append(f"exec:{executable}")
+        assert args == ["custom-server", "--port", "8000"]
+        raise ExecReached
+
+    monkeypatch.setattr(subprocess, "run", record_migration)
+    monkeypatch.setattr(os, "execvpe", record_exec)
+
+    with pytest.raises(ExecReached):
+        runtime.start_api(custom_command=["custom-server", "--port", "8000"])
+
+    assert events == ["migration", "exec:custom-server"]
+
+
 def test_concurrent_startup_migrations_are_serialized_by_advisory_lock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
