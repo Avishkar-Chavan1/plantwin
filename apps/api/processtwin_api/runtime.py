@@ -101,27 +101,28 @@ def _verify_database_readiness(runtime_url: str) -> None:
 
 def start_api(custom_command: list[str] | None = None) -> NoReturn:
     """Complete migrations before exec'ing one Gunicorn master process."""
-    print(">>> [ProcessTwin Startup] Initializing runtime...", flush=True)
+    print("[Plantwin] Starting production runtime", flush=True)
     migration_environ, api_environ = _database_environments(dict(os.environ))
     port = api_environ.get("PORT", "8000")
     if not port.isdecimal() or not 1 <= int(port) <= 65535:
         raise RuntimeError("PORT must be a valid TCP port")
 
-    print(">>> [ProcessTwin Startup] Executing database migrations to head...", flush=True)
+    print("[Plantwin] Database migration phase starting", flush=True)
+    print("[Plantwin] Running Alembic migrations", flush=True)
     subprocess.run(  # noqa: S603 - fixed module invocation, no shell, no user-controlled arguments
         [sys.executable, "-m", _MIGRATION_MODULE],
         check=True,
         env=migration_environ,
     )
 
-    print(">>> [ProcessTwin Startup] Migrations completed. Verifying database readiness...", flush=True)
+    print("[Plantwin] Alembic migration completed", flush=True)
     _verify_database_readiness(api_environ["DATABASE_URL"])
-    print(">>> [ProcessTwin Startup] Database readiness verified successfully.", flush=True)
+    print("[Plantwin] Database readiness check passed", flush=True)
 
     os.environ.pop("DATABASE_ADMIN_URL", None)
     if custom_command:
         command = custom_command
-        print(f">>> [ProcessTwin Startup] Launching custom server command: {' '.join(command)}", flush=True)
+        print(f"[Plantwin] Starting custom server command: {' '.join(command)}", flush=True)
     else:
         command = [
             "gunicorn",
@@ -139,7 +140,7 @@ def start_api(custom_command: list[str] | None = None) -> NoReturn:
             "--log-level",
             "info",
         ]
-        print(f">>> [ProcessTwin Startup] Launching Gunicorn master on port {port}...", flush=True)
+        print(f"[Plantwin] Starting Gunicorn on port {port}", flush=True)
 
     sys.stdout.flush()
     sys.stderr.flush()

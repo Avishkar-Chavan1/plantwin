@@ -150,9 +150,10 @@ def test_production_runtime_prints_startup_banners(
         runtime.start_api()
 
     captured = capsys.readouterr()
-    assert "[ProcessTwin Startup] Initializing runtime..." in captured.out
-    assert "[ProcessTwin Startup] Executing database migrations to head..." in captured.out
-    assert "[ProcessTwin Startup] Migrations completed." in captured.out
-    assert "[ProcessTwin Startup] Database readiness verified successfully." in captured.out
-    assert "[ProcessTwin Startup] Launching Gunicorn master on port 9000..." in captured.out
+    assert "[Plantwin] Starting production runtime" in captured.out
+    assert "[Plantwin] Database migration phase starting" in captured.out
+    assert "[Plantwin] Running Alembic migrations" in captured.out
+    assert "[Plantwin] Alembic migration completed" in captured.out
+    assert "[Plantwin] Database readiness check passed" in captured.out
+    assert "[Plantwin] Starting Gunicorn on port 9000" in captured.out
 
