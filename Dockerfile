@@ -59,13 +59,14 @@ USER processtwin
 # Environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PATH="/home/processtwin/.local/bin:${PATH}"
+    PATH="/home/processtwin/.local/bin:${PATH}" \
+    PORT=8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8000/live || exit 1
+    CMD curl -f http://localhost:${PORT}/live || exit 1
 
-EXPOSE 8000
+EXPOSE ${PORT}
 
 # Run migrations once before the Gunicorn master starts.
 # ENTRYPOINT guarantees that runtime.py executes and applies database migrations

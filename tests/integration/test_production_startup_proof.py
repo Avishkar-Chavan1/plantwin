@@ -154,6 +154,7 @@ def test_production_runtime_prints_startup_banners(
     assert "[Plantwin] Database migration phase starting" in captured.out
     assert "[Plantwin] Running Alembic migrations" in captured.out
     assert "[Plantwin] Alembic migration completed" in captured.out
+    assert "[Plantwin] Migration status: current=0009_connector_tenant_hardening head=0009_connector_tenant_hardening" in captured.out
     assert "[Plantwin] Database readiness check passed" in captured.out
     assert "[Plantwin] Starting Gunicorn on port 9000" in captured.out
 

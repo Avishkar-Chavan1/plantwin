@@ -99,6 +99,43 @@ def _verify_database_readiness(runtime_url: str) -> None:
         probe_engine.dispose()
 
 
+def _log_migration_status(runtime_url: str, admin_url: str) -> None:
+    """Log current Alembic revision, head revision, and application DB host."""
+    from alembic.script import ScriptDirectory
+    from sqlalchemy import create_engine, text
+
+    from .migration_runner import _alembic_config
+
+    try:
+        alembic_cfg = _alembic_config()
+        script = ScriptDirectory.from_config(alembic_cfg)
+        head_rev = script.get_current_head()
+    except Exception as exc:
+        head_rev = f"unknown ({exc})"
+
+    is_sqlite = admin_url.startswith("sqlite")
+    connect_args = (
+        {}
+        if is_sqlite
+        else {"connect_timeout": 5, "options": "-c search_path=public"}
+    )
+    status_engine = create_engine(admin_url, connect_args=connect_args)
+    try:
+        with status_engine.connect() as conn:
+            current_rev = conn.scalar(text("SELECT version_num FROM alembic_version LIMIT 1;"))
+    except Exception as exc:
+        current_rev = f"unknown ({exc})"
+    finally:
+        status_engine.dispose()
+
+    parsed_app = urlparse(runtime_url)
+    app_host = "sqlite" if is_sqlite else (parsed_app.hostname or "unknown")
+    print(
+        f"[Plantwin] Migration status: current={current_rev} head={head_rev} app_db_host={app_host}",
+        flush=True,
+    )
+
+
 def start_api(custom_command: list[str] | None = None) -> NoReturn:
     """Complete migrations before exec'ing one Gunicorn master process."""
     print("[Plantwin] Starting production runtime", flush=True)
@@ -116,6 +153,7 @@ def start_api(custom_command: list[str] | None = None) -> NoReturn:
     )
 
     print("[Plantwin] Alembic migration completed", flush=True)
+    _log_migration_status(api_environ["DATABASE_URL"], migration_environ["DATABASE_URL"])
     _verify_database_readiness(api_environ["DATABASE_URL"])
     print("[Plantwin] Database readiness check passed", flush=True)
 

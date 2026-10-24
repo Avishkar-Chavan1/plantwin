@@ -1,4 +1,6 @@
+import logging
 import os
+from urllib.parse import urlparse
 
 import apps.api.processtwin_api.models  # noqa: F401 - register model metadata
 from alembic import context
@@ -54,15 +56,32 @@ default_ini_url = "sqlite:///./processtwin.db"
 
 if admin_url:
     target_url = admin_url
+    url_source = "DATABASE_ADMIN_URL"
 elif config_url and config_url != default_ini_url:
     target_url = config_url
+    url_source = "alembic_config"
 else:
-    target_url = get_settings().database_url or config_url or default_ini_url
+    settings_db_url = get_settings().database_url
+    target_url = settings_db_url or config_url or default_ini_url
+    url_source = "get_settings().database_url" if settings_db_url else "default_ini"
 
 if target_url.startswith("postgres://"):
     target_url = "postgresql://" + target_url[len("postgres://") :]
 
+is_prod = os.environ.get("RENDER") or os.environ.get("ENVIRONMENT") == "production"
+if is_prod and target_url.startswith("sqlite"):
+    raise RuntimeError("Production on Render requires a PostgreSQL target URL, not SQLite")
+
 config.set_main_option("sqlalchemy.url", target_url)
+
+_p = urlparse(target_url)
+logging.getLogger("processtwin.migrations").info(
+    "Alembic target: source=%s dialect=%s host=%s db=%s",
+    url_source,
+    _p.scheme,
+    _p.hostname,
+    _p.path.lstrip("/"),
+)
 target_metadata = Base.metadata
 
 
